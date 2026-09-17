@@ -32,7 +32,19 @@ password: `Demo@2026`).
    (strategic plans, APPs, quarterly/annual reports) with realistic version and review history —
    uploaded as real files to the local MinIO bucket, not just DB rows.
 
-Re-run `pnpm db:seed` any time to reset the synthetic story (it's idempotent — it clears and re-seeds).
+Re-run `pnpm db:seed` any time to reset the synthetic story (it's idempotent — it clears and re-seeds). It
+also computes real risk scores (weighted model + trained logistic regression) at the end, so the demo has
+correct data from the moment seeding finishes.
+
+`pnpm dev` runs two processes together (via `concurrently`): the Next.js app, and a background job worker
+(`scripts/worker.ts`, pg-boss) that recalculates risk every 15 minutes, checks deadlines every 10 minutes,
+and sends a weekly risk briefing. It's a separate process rather than wired through Next's
+`instrumentation.ts` — pg-boss depends on `pg`, which Next tries to bundle into `instrumentation.ts`'s
+edge-runtime variant too (a shared entrypoint compiled for both runtimes, since `middleware.ts` runs on
+edge), and that bundle can't resolve `pg`'s Node-only internals. A standalone worker sidesteps it
+entirely, and is the conventional pattern for background jobs anyway. Run it on its own with `pnpm worker`,
+or the app alone (no worker) with `pnpm dev:next`. Either way, DSAC roles also have a "Recalculate now"
+button on the Early Warning page that works independently of the worker.
 
 ## Local ports
 
@@ -60,23 +72,31 @@ password. Every seeded entity actually has at least one admin + one contributor 
 sign in as any of the other 32 entities directly (`admin.<entity-slug>@<entity-slug>.demo.org`, same
 shared password).
 
-## What's real vs. mocked right now (Phase 3)
+## What's real vs. mocked right now (Phase 4)
 
 | Area | Status |
 |---|---|
 | Auth (demo credentials) | Real — bcrypt-hashed passwords, JWT sessions |
 | Auth (Microsoft Entra ID) | Wired up, inactive until `MICROSOFT_ENTRA_ID_*` env vars are set |
 | Tenant isolation | Real — enforced in `src/lib/tenant-scope.ts` (re-exported from `current-user.ts`), used by every data-access function; unit-tested in `tenant-scope.test.ts` and `constants.test.ts` (role capability matrix) |
-| Database + seed data | Real — Postgres via Prisma, full synthetic dataset, including ~480 seeded documents with realistic version/review history |
+| Database + seed data | Real — Postgres via Prisma, full synthetic dataset, including ~480 seeded documents with realistic version/review history and real (not placeholder) risk scores computed at the end of seeding |
 | File storage (MinIO) | Real — `src/lib/storage.ts` is an S3-compatible adapter (interface designed to swap for SharePoint/OneDrive via Microsoft Graph without touching callers); signed, expiring URLs only, never a public path |
-| Analytics dashboard (Module A) | Real — DSAC portfolio view (risk/target/spend/compliance), entity drill-down (KPI progress, 3-year YoY, audit history, fund utilisation, demographics, jobs), filters (financial year, quarter, sector, entity type, risk band), PDF/Excel export |
+| Analytics dashboard (Module A) | Real — DSAC portfolio view (risk/target/spend/compliance), entity drill-down (KPI progress, 3-year YoY, audit history, fund utilisation, demographics, jobs, forecast line with confidence band), filters (financial year, quarter, sector, entity type, risk band), PDF/Excel export |
 | Document repository (Module C) | Real — upload (drag-and-drop) with automatic versioning + SHA-256 checksums, DSAC review workflow (received → under review → approved/returned, with a required reason on return), version history, restore a previous version (as a new version — history is immutable), full-text-ish search (title, not content-extraction), tenant-scoped throughout |
 | Document preview | Partial — PDF previews inline (browser-native viewer via a signed URL); text/CSV preview inline in-app; Word/Excel are download-only (no rendering library wired up) |
 | Document diffing | Not built — the brief's "diff for text-extractable docs" isn't implemented; version history + restore are |
+| Early warning engine (Module B) | Real — transparent weighted score (progress vs. trajectory, submission lateness, unresolved audit findings, returned documents, deadline proximity, spend/delivery mismatch) with a per-factor "why am I seeing this?" breakdown, plus a small logistic regression (trained on this platform's own synthetic history — see `src/lib/risk-engine.ts`) predicting P(miss target) and P(late submission). Recalculated on a schedule by `scripts/worker.ts` (pg-boss), or on demand via "Recalculate now" |
+| Deadlines & countdowns | Real — live-ticking countdown timers, per-entity submission status, and a DSAC-only compliance-gap view (which entities still owe a submission for a given deadline) |
+| Notifications | Real in-app (bell with unread count, polls every 30s) and email (via Mailpit); Teams is a real webhook POST when `TEAMS_WEBHOOK_URL` is set, else a logged no-op. Deadline reminders fire at the configured day thresholds, then daily, then hourly in the final window (`DEADLINE_ALERT_DAYS` / `DEADLINE_ALERT_HOURLY_WITHIN_HOURS`), escalating to DSAC once overdue. True push delivery (SSE) is Phase 5 — for now the bell polls |
+| Weekly risk briefing | Real notification, template-narrated for now (top critical/high entities) — Phase 6 swaps the template for an AI-generated narrative from the same data |
 | "Ask the data" (Module A) | Not built yet — lands in Phase 6 with the other AI features |
-| Early warning, workspaces, remaining AI features | Not built yet — placeholder routes exist with phase labels |
+| Workspaces, remaining AI features | Not built yet — placeholder routes exist with phase labels |
 
 Dev-mode note: this repo's `next.config.ts` caps the webpack build-worker pool (`experimental.cpus: 2`) and disables the dev filesystem cache. On memory-constrained machines, Next's default worker count (scales with CPU count) could exhaust RAM mid-compile on heavier pages and crash the dev server — this setting avoids that. If you're on a machine with plenty of headroom, it's safe to raise or remove.
+
+Synthetic-data note: the seed script's KPI/document/deadline story is anchored to a fixed "today" (2026-09-17,
+matching this project's actual build date) rather than the real wall-clock date, so which quarters are "due",
+overdue, or upcoming will drift if you re-seed long after that date without updating `TODAY` in `prisma/seed.ts`.
 
 Every integration (Entra ID, Microsoft Graph, Teams, email, Claude AI) is designed to fall back to a
 mock or a no-op when unconfigured, so the demo never breaks because a credential is missing. See
@@ -96,7 +116,9 @@ rather than Radix in this version — composition uses a `render` prop instead o
 ## Scripts
 
 ```bash
-pnpm dev            # start the app
+pnpm dev            # start the app + background job worker together
+pnpm dev:next         # app only, no worker
+pnpm worker           # worker only (risk recalculation, deadline checks, weekly briefing)
 pnpm build           # production build
 pnpm lint            # ESLint
 pnpm typecheck        # tsc --noEmit
@@ -118,7 +140,7 @@ throughout:
       shell/navigation.
 - [x] **Phase 2** — DSAC portfolio dashboard + entity drill-down (Module A).
 - [x] **Phase 3** — document repository with versioning and review workflow (Module C).
-- [ ] Phase 4 — early-warning engine, deadlines, countdowns, notifications (Module B).
+- [x] **Phase 4** — early-warning engine, deadlines, countdowns, notifications (Module B).
 - [ ] Phase 5 — workspaces: tasks, real-time comments, Microsoft integration layer (Module D).
 - [ ] Phase 6 — AI features: briefings, document extraction, ask-the-data (Module A/B/C, mocked).
 - [ ] Phase 7 — security hardening, audit log viewer, `SECURITY.md`, tests, PWA polish (Module E).

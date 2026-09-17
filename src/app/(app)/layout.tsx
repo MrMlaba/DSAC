@@ -3,6 +3,7 @@ import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/s
 import { Separator } from "@/components/ui/separator";
 import { AppSidebar } from "@/components/app-sidebar";
 import { UserMenu } from "@/components/user-menu";
+import { NotificationBell } from "@/components/notification-bell";
 import { getCurrentUser } from "@/lib/current-user";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -18,7 +19,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <SidebarTrigger />
             <Separator orientation="vertical" className="h-5" />
           </div>
-          <UserMenu user={user} />
+          <div className="flex items-center gap-1">
+            <NotificationBell />
+            <UserMenu user={user} />
+          </div>
         </header>
         <main className="flex-1 p-6">{children}</main>
       </SidebarInset>

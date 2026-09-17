@@ -9,7 +9,6 @@ import {
   type DisabilityStatus,
   type AuditOpinion,
   type AuditSeverity,
-  type RiskBand,
   type DocumentType,
   type ReviewStatus,
 } from "@prisma/client";
@@ -18,6 +17,7 @@ import bcrypt from "bcryptjs";
 import { ENTITY_SEEDS, type EntitySector, type RiskProfile } from "../src/lib/seed-data/entities";
 import { DEMO_USERS, DEMO_PASSWORD } from "../src/lib/seed-data/demo-users";
 import { storage } from "../src/lib/storage";
+import { recalculateAllRiskScores } from "../src/lib/risk-engine";
 
 const prisma = new PrismaClient();
 
@@ -330,6 +330,35 @@ async function main() {
       },
     });
     annualPeriods.set(fy.label, { id: annualPeriod.id, dueDate: annualDueDate });
+  }
+
+  console.log("Creating deadlines...");
+  // Global (entityId: null) — the same calendar applies to every entity. The
+  // early-warning engine cross-references these against each entity's
+  // Document submissions to know who still owes what.
+  for (const fy of FINANCIAL_YEARS) {
+    const periods = reportingPeriods.get(fy.label)!;
+    for (const period of periods) {
+      await prisma.deadline.create({
+        data: {
+          reportingPeriodId: period.id,
+          title: `Quarterly Performance Report ${period.quarter} FY ${fy.label}`,
+          description: `Quarterly performance report for ${period.quarter}, financial year ${fy.label}.`,
+          category: "QUARTERLY_REPORT",
+          dueDate: period.dueDate,
+        },
+      });
+    }
+    const annual = annualPeriods.get(fy.label)!;
+    await prisma.deadline.create({
+      data: {
+        reportingPeriodId: annual.id,
+        title: `Annual Report FY ${fy.label}`,
+        description: `Annual report tabling deadline for financial year ${fy.label}.`,
+        category: "ANNUAL_REPORT",
+        dueDate: annual.dueDate,
+      },
+    });
   }
 
   console.log("Creating entities...");
@@ -674,27 +703,6 @@ async function main() {
       });
     }
 
-    // --- Placeholder risk score (Phase 4 replaces this with the full weighted/explainable engine) ---
-    const score =
-      seed.riskProfile === "healthy"
-        ? faker.number.int({ min: 8, max: 28 })
-        : seed.riskProfile === "watch"
-          ? faker.number.int({ min: 35, max: 64 })
-          : faker.number.int({ min: 68, max: 96 });
-    const band: RiskBand = score < 25 ? "LOW" : score < 50 ? "MEDIUM" : score < 75 ? "HIGH" : "CRITICAL";
-
-    await prisma.riskScore.create({
-      data: {
-        entityId: entity.id,
-        score,
-        band,
-        factors: {
-          note: "Placeholder score seeded for Phase 1/2 dashboards — replaced by the weighted early-warning engine in Phase 4.",
-          riskProfile: seed.riskProfile,
-        },
-        computedAt: TODAY,
-      },
-    });
   }
 
   console.log("Creating documents (strategic plans, APPs, annual & quarterly reports)...");
@@ -781,7 +789,12 @@ async function main() {
     }
   }
 
-  console.log(`Seed complete: ${ENTITY_SEEDS.length} entities, ${DEMO_USERS.length} demo users (+ auto-generated).`);
+  console.log("Computing initial risk scores (weighted model + trained logistic regression)...");
+  const riskScoreCount = await recalculateAllRiskScores();
+
+  console.log(
+    `Seed complete: ${ENTITY_SEEDS.length} entities, ${DEMO_USERS.length} demo users (+ auto-generated), ${riskScoreCount} risk scores computed.`,
+  );
 }
 
 main()
