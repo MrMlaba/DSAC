@@ -58,17 +58,20 @@ password. Every seeded entity actually has at least one admin + one contributor 
 sign in as any of the other 32 entities directly (`admin.<entity-slug>@<entity-slug>.demo.org`, same
 shared password).
 
-## What's real vs. mocked right now (Phase 1)
+## What's real vs. mocked right now (Phase 2)
 
 | Area | Status |
 |---|---|
 | Auth (demo credentials) | Real — bcrypt-hashed passwords, JWT sessions |
 | Auth (Microsoft Entra ID) | Wired up, inactive until `MICROSOFT_ENTRA_ID_*` env vars are set |
-| Tenant isolation | Real — enforced in `src/lib/current-user.ts`, used by the dashboard query |
+| Tenant isolation | Real — enforced in `src/lib/tenant-scope.ts` (re-exported from `current-user.ts`), used by every data-access function; unit-tested in `tenant-scope.test.ts` |
 | Database + seed data | Real — Postgres via Prisma, full synthetic dataset |
 | File storage (MinIO) | Bucket provisioned; no upload UI yet (Phase 3) |
-| Analytics dashboard | Minimal smoke-test view only; full Module A lands in Phase 2 |
+| Analytics dashboard (Module A) | Real — DSAC portfolio view (risk/target/spend/compliance), entity drill-down (KPI progress, 3-year YoY, audit history, fund utilisation, demographics, jobs), filters (financial year, quarter, sector, entity type, risk band), PDF/Excel export |
+| "Ask the data" (Module A) | Not built yet — lands in Phase 6 with the other AI features |
 | Document repository, early warning, workspaces, AI features | Not built yet — placeholder routes exist with phase labels |
+
+Dev-mode note: this repo's `next.config.ts` caps the webpack build-worker pool (`experimental.cpus: 2`) and disables the dev filesystem cache. On memory-constrained machines, Next's default worker count (scales with CPU count) could exhaust RAM mid-compile on heavier pages and crash the dev server — this setting avoids that. If you're on a machine with plenty of headroom, it's safe to raise or remove.
 
 Every integration (Entra ID, Microsoft Graph, Teams, email, Claude AI) is designed to fall back to a
 mock or a no-op when unconfigured, so the demo never breaks because a credential is missing. See
@@ -108,7 +111,7 @@ throughout:
 
 - [x] **Phase 1** — scaffold, Docker Compose, Prisma schema, auth + demo role switcher, seed data, app
       shell/navigation.
-- [ ] Phase 2 — DSAC portfolio dashboard + entity drill-down (Module A).
+- [x] **Phase 2** — DSAC portfolio dashboard + entity drill-down (Module A).
 - [ ] Phase 3 — document repository with versioning and review workflow (Module C).
 - [ ] Phase 4 — early-warning engine, deadlines, countdowns, notifications (Module B).
 - [ ] Phase 5 — workspaces: tasks, real-time comments, Microsoft integration layer (Module D).

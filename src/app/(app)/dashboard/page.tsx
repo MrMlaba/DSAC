@@ -1,108 +1,143 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { isDsacWideRole, ROLE_LABELS } from "@/lib/constants";
-import { entityIdScopeWhere, requireUser } from "@/lib/current-user";
-import { prisma } from "@/lib/prisma";
-import type { RiskBand } from "@prisma/client";
+import { requireUser } from "@/lib/current-user";
+import { getPortfolioData } from "@/lib/data/portfolio";
+import { resolvePortfolioFilters } from "@/lib/data/portfolio-filters";
+import { KPI_STATUS_COLORS, KPI_STATUS_LABELS, KPI_STATUS_ORDER, RISK_BAND_ORDER, RISK_BAND_VISUALS } from "@/lib/risk-visuals";
+import { ProportionBar, MagnitudeBar } from "@/components/proportion-bar";
+import { PortfolioFilters } from "@/components/portfolio-filters";
+import { EntityCard } from "@/components/entity-card";
+import { ExportButtons } from "@/components/export-buttons";
 
-const RISK_BAND_STYLES: Record<RiskBand, string> = {
-  LOW: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
-  MEDIUM: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  HIGH: "bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300",
-  CRITICAL: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-};
-
-const RISK_BANDS: RiskBand[] = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
-
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const user = await requireUser();
-  const where = entityIdScopeWhere(user);
   const dsacWide = isDsacWideRole(user.role);
-
-  const entities = await prisma.entity.findMany({
-    where,
-    include: { riskScores: { orderBy: { computedAt: "desc" }, take: 1 } },
-    orderBy: { name: "asc" },
-  });
-
-  const peCount = entities.filter((e) => e.type === "PUBLIC_ENTITY").length;
-  const npoCount = entities.filter((e) => e.type === "NPO").length;
-  const bandCounts = entities.reduce<Record<string, number>>((acc, e) => {
-    const band = e.riskScores[0]?.band ?? "LOW";
-    acc[band] = (acc[band] ?? 0) + 1;
-    return acc;
-  }, {});
+  const resolvedSearchParams = await searchParams;
+  const { filters, financialYears, financialYearLabel } = await resolvePortfolioFilters(resolvedSearchParams);
+  const { rows, summary } = await getPortfolioData(user, filters);
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {dsacWide ? "DSAC Portfolio Overview" : "Entity Overview"}
-        </h1>
-        <p className="text-muted-foreground text-sm">
-          Signed in as {user.name} — {ROLE_LABELS[user.role]}
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {dsacWide ? "DSAC Portfolio Overview" : "Entity Overview"}
+          </h1>
+          <p className="text-muted-foreground text-sm">
+            Signed in as {user.name} — {ROLE_LABELS[user.role]} · FY {financialYearLabel}
+          </p>
+        </div>
+        <ExportButtons rows={rows} financialYearLabel={financialYearLabel} />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <PortfolioFilters financialYears={financialYears} />
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
-            <CardDescription>{dsacWide ? "Entities tracked" : "Your entity"}</CardDescription>
-            <CardTitle className="text-3xl">{entities.length}</CardTitle>
+            <CardDescription>{dsacWide ? "Entities in scope" : "Your entity"}</CardDescription>
+            <CardTitle className="text-3xl">{summary.entityCount}</CardTitle>
           </CardHeader>
           <CardContent className="text-muted-foreground text-xs">
-            {peCount} public entities · {npoCount} NPOs
+            {summary.publicEntityCount} public entities · {summary.npoCount} NPOs
           </CardContent>
         </Card>
-        {RISK_BANDS.map((band) => (
-          <Card key={band}>
-            <CardHeader className="pb-2">
-              <CardDescription>{band[0]}{band.slice(1).toLowerCase()} risk</CardDescription>
-              <CardTitle className="text-3xl">{bandCounts[band] ?? 0}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Badge className={RISK_BAND_STYLES[band]} variant="secondary">
-                {band === "LOW" || band === "MEDIUM" ? "On track" : "Needs attention"}
-              </Badge>
-            </CardContent>
-          </Card>
-        ))}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Fund utilisation</CardDescription>
+            <CardTitle className="text-3xl">
+              {summary.avgUtilisationRate !== null ? `${Math.round(summary.avgUtilisationRate * 100)}%` : "—"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <MagnitudeBar value={summary.avgUtilisationRate ?? 0} color="var(--chart-1)" />
+            <p className="text-muted-foreground mt-1.5 text-xs">Average across entities in scope</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Submission compliance</CardDescription>
+            <CardTitle className="text-3xl">
+              {summary.avgComplianceRate !== null ? `${Math.round(summary.avgComplianceRate * 100)}%` : "—"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <MagnitudeBar value={summary.avgComplianceRate ?? 0} color="var(--status-good)" />
+            <p className="text-muted-foreground mt-1.5 text-xs">Reports submitted on time</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>KPIs tracked</CardDescription>
+            <CardTitle className="text-3xl">{summary.totalKpis}</CardTitle>
+          </CardHeader>
+          <CardContent className="text-muted-foreground text-xs">
+            {summary.kpiStatusCounts.ACHIEVED} achieved · {summary.kpiStatusCounts.DEADLINE_MISSED} deadline missed
+          </CardContent>
+        </Card>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Entities</CardTitle>
-          <CardDescription>
-            The full Analytics Module (trends, KPI drill-down, exports) lands in Phase 2 — this list is
-            a data-pipeline smoke test confirming auth, tenant scoping and seed data all work together.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="divide-y">
-            {entities.map((entity) => {
-              const risk = entity.riskScores[0];
-              return (
-                <div key={entity.id} className="flex items-center justify-between gap-4 py-2.5 text-sm">
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">{entity.name}</p>
-                    <p className="text-muted-foreground text-xs">
-                      {entity.sector.replaceAll("_", " ")} · {entity.type === "PUBLIC_ENTITY" ? "Public Entity" : "NPO"}
-                    </p>
-                  </div>
-                  {risk && (
-                    <Badge className={`${RISK_BAND_STYLES[risk.band]} shrink-0`} variant="secondary">
-                      {risk.band} · {risk.score}
-                    </Badge>
-                  )}
-                </div>
-              );
-            })}
-            {entities.length === 0 && (
-              <p className="text-muted-foreground py-6 text-center text-sm">No entities in scope yet.</p>
-            )}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Target status</CardTitle>
+            <CardDescription>All KPIs across entities in scope, FY {financialYearLabel}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ProportionBar
+              segments={KPI_STATUS_ORDER.map((status) => ({
+                key: status,
+                label: KPI_STATUS_LABELS[status],
+                value: summary.kpiStatusCounts[status],
+                color: KPI_STATUS_COLORS[status],
+              }))}
+            />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Risk distribution</CardTitle>
+            <CardDescription>Entities in scope by early-warning risk band</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ProportionBar
+              segments={RISK_BAND_ORDER.map((band) => ({
+                key: band,
+                label: RISK_BAND_VISUALS[band].label,
+                value: summary.riskBandCounts[band],
+                color: RISK_BAND_VISUALS[band].color,
+              }))}
+            />
+          </CardContent>
+        </Card>
+      </div>
+
+      <div>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-semibold tracking-tight">Entities</h2>
+          <Badge variant="outline" className="text-xs">
+            {rows.length} shown
+          </Badge>
+        </div>
+        {rows.length === 0 ? (
+          <Card className="border-dashed">
+            <CardContent className="text-muted-foreground py-10 text-center text-sm">
+              No entities match the current filters.
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {rows.map((entity) => (
+              <EntityCard key={entity.id} entity={entity} />
+            ))}
           </div>
-        </CardContent>
-      </Card>
+        )}
+      </div>
     </div>
   );
 }
