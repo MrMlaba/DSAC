@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { assertEntityAccess, type CurrentUser } from "@/lib/current-user";
+import { assertEntityAccess, type CurrentUser } from "@/lib/tenant-scope";
 import type { Quarter } from "@prisma/client";
 
 const QUARTER_ORDER: Quarter[] = ["Q1", "Q2", "Q3", "Q4"];

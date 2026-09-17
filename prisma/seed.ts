@@ -1,8 +1,23 @@
-import { PrismaClient, type Quarter, type KpiStatus, type Gender, type RaceCategory, type AgeBand, type DisabilityStatus, type AuditOpinion, type AuditSeverity, type RiskBand } from "@prisma/client";
+import crypto from "node:crypto";
+import {
+  PrismaClient,
+  type Quarter,
+  type KpiStatus,
+  type Gender,
+  type RaceCategory,
+  type AgeBand,
+  type DisabilityStatus,
+  type AuditOpinion,
+  type AuditSeverity,
+  type RiskBand,
+  type DocumentType,
+  type ReviewStatus,
+} from "@prisma/client";
 import { faker } from "@faker-js/faker";
 import bcrypt from "bcryptjs";
 import { ENTITY_SEEDS, type EntitySector, type RiskProfile } from "../src/lib/seed-data/entities";
 import { DEMO_USERS, DEMO_PASSWORD } from "../src/lib/seed-data/demo-users";
+import { storage } from "../src/lib/storage";
 
 const prisma = new PrismaClient();
 
@@ -117,6 +132,134 @@ function round2(n: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Documents
+// ---------------------------------------------------------------------------
+
+const RETURN_REASONS = [
+  "Reported figures do not reconcile with the quarterly KPI submissions.",
+  "Missing supporting evidence for claimed achievements.",
+  "Executive authority sign-off page is missing.",
+  "Variance explanations required for underperforming targets.",
+];
+
+/**
+ * Seeded documents are plain-text stand-ins for real PDFs/Word/Excel files —
+ * honest placeholders rather than hand-rolled fake binary formats. The live
+ * upload flow (Phase 3 UI) supports real files of those types; this just
+ * gives the document repository realistic history to browse and review.
+ */
+function docBodyText(params: { title: string; entityName: string; typeLabel: string; fyLabel: string; quarter?: Quarter }) {
+  return [
+    params.title,
+    `Entity: ${params.entityName}`,
+    `Document type: ${params.typeLabel}`,
+    `Financial year: ${params.fyLabel}${params.quarter && params.quarter !== "ANNUAL" ? ` — ${params.quarter}` : ""}`,
+    "",
+    "This is a synthetic placeholder document generated for the GovTech Hackathon 2026 demo of the",
+    "DSAC Public Entities Performance & Reporting Platform. In production this slot holds the entity's",
+    "actual submission (PDF, Word or Excel) rather than this plain-text stand-in.",
+    "",
+    "— Demo, synthetic data only.",
+  ].join("\n");
+}
+
+async function uploadWithRetry(key: string, body: Buffer, contentType: string, attempts = 5) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await storage.upload(key, body, contentType);
+      return;
+    } catch (err) {
+      if (i === attempts - 1) throw err;
+      console.warn(`  storage upload retry (${i + 1}/${attempts}) for ${key}: ${(err as Error).message}`);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+}
+
+interface VersionOutcome {
+  status: ReviewStatus;
+  reviewerId?: string;
+  comment?: string;
+}
+
+/** Weighted, risk-profile-aware review history — 1 version normally, 2 when a return-then-fix story fits. */
+function reviewOutcomes(riskProfile: RiskProfile, isCurrent: boolean, dsacReviewerIds: string[]): VersionOutcome[] {
+  const reviewer = () => faker.helpers.arrayElement(dsacReviewerIds);
+  const returned = () => ({ status: "RETURNED" as ReviewStatus, reviewerId: reviewer(), comment: faker.helpers.arrayElement(RETURN_REASONS) });
+  const roll = faker.number.float({ min: 0, max: 1 });
+
+  if (riskProfile === "healthy") {
+    if (isCurrent) return roll < 0.6 ? [{ status: "APPROVED", reviewerId: reviewer() }] : [{ status: "UNDER_REVIEW", reviewerId: reviewer() }];
+    return [{ status: "APPROVED", reviewerId: reviewer() }];
+  }
+
+  if (riskProfile === "watch") {
+    if (isCurrent) {
+      if (roll < 0.4) return [{ status: "RECEIVED" }];
+      if (roll < 0.75) return [{ status: "UNDER_REVIEW", reviewerId: reviewer() }];
+      return [returned()];
+    }
+    if (roll < 0.55) return [{ status: "APPROVED", reviewerId: reviewer() }];
+    return [returned(), { status: "APPROVED", reviewerId: reviewer() }];
+  }
+
+  // critical
+  if (isCurrent) {
+    if (roll < 0.3) return [{ status: "RECEIVED" }];
+    if (roll < 0.6) return [{ status: "UNDER_REVIEW", reviewerId: reviewer() }];
+    return [returned()];
+  }
+  if (roll < 0.5) return [returned()];
+  return [returned(), { status: "APPROVED", reviewerId: reviewer() }];
+}
+
+async function seedDocument(params: {
+  entityId: string;
+  type: DocumentType;
+  title: string;
+  reportingPeriodId: string;
+  authorId: string;
+  bodyText: string;
+  versions: VersionOutcome[];
+  dueDate: Date;
+}) {
+  const document = await prisma.document.create({
+    data: { entityId: params.entityId, type: params.type, title: params.title, reportingPeriodId: params.reportingPeriodId },
+  });
+
+  for (let i = 0; i < params.versions.length; i++) {
+    const outcome = params.versions[i];
+    const versionNumber = i + 1;
+    const content = Buffer.from(`${params.bodyText}\n\nVersion ${versionNumber} of ${params.versions.length}.`, "utf-8");
+    const checksum = crypto.createHash("sha256").update(content).digest("hex");
+    const storageKey = `entities/${params.entityId}/documents/${document.id}/v${versionNumber}-${params.type.toLowerCase()}.txt`;
+    await uploadWithRetry(storageKey, content, "text/plain");
+
+    const createdAt = new Date(params.dueDate);
+    createdAt.setDate(createdAt.getDate() + i * 3);
+
+    await prisma.documentVersion.create({
+      data: {
+        documentId: document.id,
+        versionNumber,
+        storageKey,
+        checksum,
+        fileSize: content.byteLength,
+        mimeType: "text/plain",
+        authorId: params.authorId,
+        changeNote: versionNumber > 1 ? "Resubmission addressing DSAC feedback." : undefined,
+        reviewStatus: outcome.status,
+        reviewedById: outcome.reviewerId,
+        reviewedAt: outcome.reviewerId ? createdAt : undefined,
+        reviewComment: outcome.comment,
+        createdAt,
+      },
+    });
+  }
+  return document;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -148,6 +291,9 @@ async function main() {
   console.log("Creating financial years and reporting periods...");
   const financialYears = new Map<string, { id: string; startDate: Date; endDate: Date }>();
   const reportingPeriods = new Map<string, { id: string; quarter: Quarter; dueDate: Date; endDate: Date }[]>();
+  // Year-level documents (Strategic Plan, APP, Annual Report, Financials) anchor to this
+  // rather than a specific quarter's ReportingPeriod.
+  const annualPeriods = new Map<string, { id: string; dueDate: Date }>();
 
   for (const fy of FINANCIAL_YEARS) {
     const created = await prisma.financialYear.create({
@@ -170,6 +316,20 @@ async function main() {
       periods.push({ id: period.id, quarter, dueDate, endDate: end });
     }
     reportingPeriods.set(fy.label, periods);
+
+    // PFMA-style annual report tabling deadline: ~5 months after year-end.
+    const annualDueDate = new Date(fy.endDate);
+    annualDueDate.setMonth(annualDueDate.getMonth() + 5);
+    const annualPeriod = await prisma.reportingPeriod.create({
+      data: {
+        financialYearId: created.id,
+        quarter: "ANNUAL",
+        startDate: fy.startDate,
+        endDate: fy.endDate,
+        dueDate: annualDueDate,
+      },
+    });
+    annualPeriods.set(fy.label, { id: annualPeriod.id, dueDate: annualDueDate });
   }
 
   console.log("Creating entities...");
@@ -190,6 +350,7 @@ async function main() {
   console.log("Creating users...");
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 10);
   const usersByEntity = new Map<string, string[]>(); // entityId -> userIds
+  const dsacReviewerIds: string[] = [];
 
   for (const demoUser of DEMO_USERS) {
     const entityId = demoUser.entitySlug ? entityRecords.get(demoUser.entitySlug)?.id : undefined;
@@ -205,6 +366,9 @@ async function main() {
     });
     if (entityId) {
       usersByEntity.set(entityId, [...(usersByEntity.get(entityId) ?? []), user.id]);
+    }
+    if (demoUser.role === "DSAC_ADMIN" || demoUser.role === "DSAC_ANALYST") {
+      dsacReviewerIds.push(user.id);
     }
   }
 
@@ -531,6 +695,90 @@ async function main() {
         computedAt: TODAY,
       },
     });
+  }
+
+  console.log("Creating documents (strategic plans, APPs, annual & quarterly reports)...");
+  for (const seed of ENTITY_SEEDS) {
+    const entity = entityRecords.get(seed.slug)!;
+    const author = () => faker.helpers.arrayElement(usersByEntity.get(entity.id) ?? []);
+
+    const oldestFy = FINANCIAL_YEARS[0];
+    const oldestFyAnnual = annualPeriods.get(oldestFy.label)!;
+    await seedDocument({
+      entityId: entity.id,
+      type: "STRATEGIC_PLAN",
+      title: `${seed.name} Strategic Plan 2024–2029`,
+      reportingPeriodId: oldestFyAnnual.id,
+      authorId: author(),
+      bodyText: docBodyText({
+        title: `${seed.name} Strategic Plan 2024–2029`,
+        entityName: seed.name,
+        typeLabel: "Strategic Plan",
+        fyLabel: oldestFy.label,
+      }),
+      versions: [{ status: "APPROVED", reviewerId: faker.helpers.arrayElement(dsacReviewerIds) }],
+      dueDate: oldestFy.startDate,
+    });
+
+    for (const fy of FINANCIAL_YEARS) {
+      const isCurrent = fy.label === "2026/27";
+      const annual = annualPeriods.get(fy.label)!;
+      const title = `Annual Performance Plan FY ${fy.label}`;
+      await seedDocument({
+        entityId: entity.id,
+        type: "APP",
+        title,
+        reportingPeriodId: annual.id,
+        authorId: author(),
+        bodyText: docBodyText({ title, entityName: seed.name, typeLabel: "Annual Performance Plan", fyLabel: fy.label }),
+        versions: reviewOutcomes(seed.riskProfile, isCurrent, dsacReviewerIds),
+        dueDate: fy.startDate,
+      });
+    }
+
+    for (const fy of FINANCIAL_YEARS.filter((f) => f.label !== "2026/27")) {
+      const annual = annualPeriods.get(fy.label)!;
+      const title = `Annual Report FY ${fy.label}`;
+      await seedDocument({
+        entityId: entity.id,
+        type: "ANNUAL_REPORT",
+        title,
+        reportingPeriodId: annual.id,
+        authorId: author(),
+        bodyText: docBodyText({ title, entityName: seed.name, typeLabel: "Annual Report", fyLabel: fy.label }),
+        versions: reviewOutcomes(seed.riskProfile, false, dsacReviewerIds),
+        dueDate: annual.dueDate,
+      });
+    }
+
+    for (const fy of FINANCIAL_YEARS) {
+      const isCurrentYear = fy.label === "2026/27";
+      const periods = reportingPeriods.get(fy.label)!;
+      for (const period of periods) {
+        if (period.dueDate > TODAY) continue;
+        const isMostRecentDue = isCurrentYear && period.quarter === "Q1";
+        if (seed.riskProfile === "critical" && isMostRecentDue && faker.number.float({ min: 0, max: 1 }) < 0.15) {
+          continue; // simulates a missed submission entirely
+        }
+        const title = `Quarterly Performance Report ${period.quarter} FY ${fy.label}`;
+        await seedDocument({
+          entityId: entity.id,
+          type: "QUARTERLY_REPORT",
+          title,
+          reportingPeriodId: period.id,
+          authorId: author(),
+          bodyText: docBodyText({
+            title,
+            entityName: seed.name,
+            typeLabel: "Quarterly Performance Report",
+            fyLabel: fy.label,
+            quarter: period.quarter,
+          }),
+          versions: reviewOutcomes(seed.riskProfile, isMostRecentDue, dsacReviewerIds),
+          dueDate: period.dueDate,
+        });
+      }
+    }
   }
 
   console.log(`Seed complete: ${ENTITY_SEEDS.length} entities, ${DEMO_USERS.length} demo users (+ auto-generated).`);

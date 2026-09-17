@@ -1,5 +1,5 @@
-import { CheckCircle2Icon, TriangleAlertIcon, OctagonAlertIcon, OctagonXIcon } from "lucide-react";
-import type { RiskBand, AuditSeverity, KpiStatus } from "@prisma/client";
+import { CheckCircle2Icon, TriangleAlertIcon, OctagonAlertIcon, OctagonXIcon, ClockIcon, InboxIcon, SearchIcon, UndoIcon } from "lucide-react";
+import type { RiskBand, AuditSeverity, KpiStatus, ReviewStatus } from "@prisma/client";
 
 /**
  * Status colors (good/warning/serious/critical) are reserved for
@@ -37,3 +37,13 @@ export const KPI_STATUS_COLORS: Record<KpiStatus, string> = {
 
 export const RISK_BAND_ORDER: RiskBand[] = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
 export const KPI_STATUS_ORDER: KpiStatus[] = ["NOT_STARTED", "IN_PROGRESS", "ACHIEVED", "DEADLINE_MISSED"];
+
+export const REVIEW_STATUS_VISUALS: Record<ReviewStatus, { label: string; color: string; icon: typeof CheckCircle2Icon }> = {
+  SUBMITTED: { label: "Submitted", color: "var(--muted-foreground)", icon: ClockIcon },
+  RECEIVED: { label: "Received", color: "var(--chart-1)", icon: InboxIcon },
+  UNDER_REVIEW: { label: "Under review", color: "var(--status-warning)", icon: SearchIcon },
+  APPROVED: { label: "Approved", color: "var(--status-good)", icon: CheckCircle2Icon },
+  RETURNED: { label: "Returned", color: "var(--status-serious)", icon: UndoIcon },
+};
+
+export const REVIEW_STATUS_ORDER: ReviewStatus[] = ["SUBMITTED", "RECEIVED", "UNDER_REVIEW", "APPROVED", "RETURNED"];

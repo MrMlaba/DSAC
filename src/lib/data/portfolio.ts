@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import type { CurrentUser } from "@/lib/current-user";
-import { entityIdScopeWhere } from "@/lib/current-user";
+import { entityIdScopeWhere, type CurrentUser } from "@/lib/tenant-scope";
 import type { EntityType, Sector, RiskBand, KpiStatus, Quarter } from "@prisma/client";
 import { KPI_STATUS_ORDER, RISK_BAND_ORDER } from "@/lib/risk-visuals";
 

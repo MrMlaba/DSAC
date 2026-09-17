@@ -1,4 +1,4 @@
-import type { Role, Sector, EntityType, Gender, RaceCategory, AgeBand, DisabilityStatus, AuditOpinion, JobType, Quarter } from "@prisma/client";
+import type { Role, Sector, EntityType, Gender, RaceCategory, AgeBand, DisabilityStatus, AuditOpinion, JobType, Quarter, DocumentType } from "@prisma/client";
 
 export const APP_NAME = "DSAC Performance & Reporting Platform";
 export const DEMO_BANNER = "Demo – synthetic data";
@@ -106,6 +106,55 @@ export const READ_ONLY_ROLES: Role[] = ["EXECUTIVE_VIEWER"];
 export function isReadOnlyRole(role: Role): boolean {
   return READ_ONLY_ROLES.includes(role);
 }
+
+/** Who can upload/version a document for an entity (still tenant-scoped — see assertEntityAccess). */
+export const DOCUMENT_UPLOAD_ROLES: Role[] = ["ENTITY_ADMIN", "ENTITY_CONTRIBUTOR", "DSAC_ADMIN"];
+
+export function canUploadDocuments(role: Role): boolean {
+  return DOCUMENT_UPLOAD_ROLES.includes(role);
+}
+
+/** Who can approve/return a submitted document version. DSAC_ANALYST reviews; EXECUTIVE_VIEWER never acts. */
+export const DOCUMENT_REVIEW_ROLES: Role[] = ["DSAC_ADMIN", "DSAC_ANALYST"];
+
+export function canReviewDocuments(role: Role): boolean {
+  return DOCUMENT_REVIEW_ROLES.includes(role);
+}
+
+export const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
+  STRATEGIC_PLAN: "Strategic Plan",
+  APP: "Annual Performance Plan",
+  OPERATIONAL_PLAN: "Operational Plan",
+  ANNUAL_REPORT: "Annual Report",
+  QUARTERLY_REPORT: "Quarterly Report",
+  FINANCIALS: "Financial Statements",
+  OTHER: "Other",
+};
+
+export const DOCUMENT_TYPE_ORDER: DocumentType[] = [
+  "STRATEGIC_PLAN",
+  "APP",
+  "OPERATIONAL_PLAN",
+  "QUARTERLY_REPORT",
+  "ANNUAL_REPORT",
+  "FINANCIALS",
+  "OTHER",
+];
+
+/** Document types tied to a specific quarter rather than a whole financial year. */
+export const QUARTERLY_DOCUMENT_TYPES: DocumentType[] = ["QUARTERLY_REPORT"];
+
+export const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024; // 25MB
+
+export const ALLOWED_UPLOAD_MIME_TYPES: Record<string, string> = {
+  "application/pdf": ".pdf",
+  "application/msword": ".doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "application/vnd.ms-excel": ".xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+  "text/plain": ".txt",
+  "text/csv": ".csv",
+};
 
 /** Days-before-due-date thresholds for deadline alerts (configurable via env). */
 export function getDeadlineAlertDays(): number[] {
