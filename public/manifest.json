@@ -1,0 +1,16 @@
+{
+  "name": "DSAC Performance & Reporting Platform (Demo)",
+  "short_name": "DSAC Reporting",
+  "description": "Demo – synthetic data. GovTech Hackathon 2026 prototype for DSAC public entity performance and reporting.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0a5c36",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+  ]
+}

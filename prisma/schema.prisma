@@ -1,0 +1,588 @@
+// DSAC Public Entities Performance & Reporting Platform
+// Prototype schema — GovTech Hackathon 2026. Synthetic data only.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum EntityType {
+  PUBLIC_ENTITY
+  NPO
+}
+
+enum Sector {
+  SPORT
+  ARTS
+  CULTURE
+  HERITAGE
+  MUSEUMS
+  LIBRARIES
+  ARCHIVES
+  OTHER
+}
+
+enum Role {
+  DSAC_ADMIN
+  DSAC_ANALYST
+  ENTITY_ADMIN
+  ENTITY_CONTRIBUTOR
+  EXECUTIVE_VIEWER
+}
+
+enum Quarter {
+  Q1
+  Q2
+  Q3
+  Q4
+  ANNUAL
+}
+
+enum KpiStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  ACHIEVED
+  DEADLINE_MISSED
+}
+
+enum DocumentType {
+  STRATEGIC_PLAN
+  APP
+  OPERATIONAL_PLAN
+  ANNUAL_REPORT
+  QUARTERLY_REPORT
+  FINANCIALS
+  OTHER
+}
+
+enum ReviewStatus {
+  SUBMITTED
+  RECEIVED
+  UNDER_REVIEW
+  APPROVED
+  RETURNED
+}
+
+enum TaskDirection {
+  INTERNAL
+  TO_DSAC
+  FROM_DSAC
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+  BLOCKED
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  TEAMS
+}
+
+enum NotificationType {
+  DEADLINE_REMINDER
+  SUBMISSION_RECEIVED
+  REVIEW_APPROVED
+  REVIEW_RETURNED
+  TASK_ASSIGNED
+  RISK_ALERT
+  COMMENT_MENTION
+  WEEKLY_BRIEFING
+}
+
+enum RiskBand {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AuditOpinion {
+  CLEAN
+  UNQUALIFIED_WITH_FINDINGS
+  QUALIFIED
+  ADVERSE
+  DISCLAIMER
+}
+
+enum AuditSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AuditFindingStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+}
+
+enum Gender {
+  FEMALE
+  MALE
+  OTHER
+}
+
+enum RaceCategory {
+  AFRICAN
+  COLOURED
+  INDIAN
+  WHITE
+  OTHER
+}
+
+enum AgeBand {
+  UNDER_25
+  AGE_25_34
+  AGE_35_44
+  AGE_45_54
+  AGE_55_PLUS
+}
+
+enum DisabilityStatus {
+  WITH_DISABILITY
+  WITHOUT_DISABILITY
+}
+
+enum JobType {
+  PERMANENT
+  TEMPORARY
+  YOUTH
+}
+
+enum DeadlineCategory {
+  QUARTERLY_REPORT
+  ANNUAL_REPORT
+  FINANCIALS
+  STRATEGIC_PLAN
+  APP_SUBMISSION
+  AUDIT_RESPONSE
+  OTHER
+}
+
+enum PiiClassification {
+  NONE
+  AGGREGATED
+  PERSONAL
+  SENSITIVE
+}
+
+// ---------------------------------------------------------------------------
+// Core tenancy
+// ---------------------------------------------------------------------------
+
+model Entity {
+  id                String     @id @default(cuid())
+  name              String
+  type              EntityType
+  sector            Sector
+  description       String?
+  logoUrl           String?
+  fundingAllocation Decimal    @db.Decimal(14, 2)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  users             User[]
+  kpis              Kpi[]
+  documents         Document[]
+  tasks             Task[]
+  fundAllocations   FundAllocation[]
+  auditFindings     AuditFinding[]
+  workforceStats    WorkforceStat[]
+  jobCreations      JobCreation[]
+  comments          Comment[]
+  deadlines         Deadline[]
+  riskScores        RiskScore[]
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+
+  @@index([type])
+  @@index([sector])
+}
+
+model FinancialYear {
+  id        String   @id @default(cuid())
+  label     String   @unique // e.g. "2023/24"
+  startDate DateTime
+  endDate   DateTime
+  createdAt DateTime @default(now())
+
+  reportingPeriods ReportingPeriod[]
+  kpis             Kpi[]
+  fundAllocations  FundAllocation[]
+  auditFindings    AuditFinding[]
+  workforceStats   WorkforceStat[]
+  jobCreations     JobCreation[]
+}
+
+model ReportingPeriod {
+  id              String        @id @default(cuid())
+  financialYearId String
+  financialYear   FinancialYear @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+  quarter         Quarter
+  startDate       DateTime
+  endDate         DateTime
+  dueDate         DateTime
+
+  kpiMilestones      KpiMilestone[]
+  performanceReports PerformanceReport[]
+  deadlines          Deadline[]
+  documents          Document[]
+
+  @@unique([financialYearId, quarter])
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+model User {
+  id             String    @id @default(cuid())
+  name           String
+  email          String    @unique
+  hashedPassword String?
+  image          String?
+  role           Role
+  entityId       String?
+  entity         Entity?   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  isDemoUser     Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  documentVersions   DocumentVersion[] @relation("DocumentVersionAuthor")
+  reviewedVersions   DocumentVersion[] @relation("DocumentVersionReviewer")
+  comments           Comment[]
+  tasksAssigned      Task[]            @relation("TaskAssignee")
+  tasksCreated       Task[]            @relation("TaskAssigner")
+  notifications      Notification[]
+  performanceReports PerformanceReport[]
+  auditLogs          AuditLog[]
+
+  @@index([entityId])
+}
+
+// ---------------------------------------------------------------------------
+// KPIs & performance
+// ---------------------------------------------------------------------------
+
+model Kpi {
+  id              String        @id @default(cuid())
+  entityId        String
+  entity          Entity        @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  financialYearId String
+  financialYear   FinancialYear @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+  name            String
+  description     String?
+  category        String?
+  baseline        Decimal       @db.Decimal(14, 2)
+  annualTarget    Decimal       @db.Decimal(14, 2)
+  unit            String
+  status          KpiStatus     @default(NOT_STARTED)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  milestones          KpiMilestone[]
+  performanceReports  PerformanceReport[]
+  comments            Comment[]
+  riskScores          RiskScore[]
+
+  @@index([entityId, financialYearId])
+}
+
+model KpiMilestone {
+  id                String          @id @default(cuid())
+  kpiId             String
+  kpi               Kpi             @relation(fields: [kpiId], references: [id], onDelete: Cascade)
+  reportingPeriodId String
+  reportingPeriod   ReportingPeriod @relation(fields: [reportingPeriodId], references: [id], onDelete: Cascade)
+  targetValue       Decimal         @db.Decimal(14, 2)
+
+  @@unique([kpiId, reportingPeriodId])
+}
+
+model PerformanceReport {
+  id                  String          @id @default(cuid())
+  kpiId               String
+  kpi                 Kpi             @relation(fields: [kpiId], references: [id], onDelete: Cascade)
+  reportingPeriodId   String
+  reportingPeriod     ReportingPeriod @relation(fields: [reportingPeriodId], references: [id], onDelete: Cascade)
+  actualValue         Decimal         @db.Decimal(14, 2)
+  status              KpiStatus
+  evidenceUrl         String?
+  varianceExplanation String?
+  submittedById       String?
+  submittedBy         User?           @relation(fields: [submittedById], references: [id])
+  submittedAt         DateTime        @default(now())
+  isLate              Boolean         @default(false)
+
+  @@unique([kpiId, reportingPeriodId])
+}
+
+// ---------------------------------------------------------------------------
+// Finance
+// ---------------------------------------------------------------------------
+
+model FundAllocation {
+  id              String        @id @default(cuid())
+  entityId        String
+  entity          Entity        @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  financialYearId String
+  financialYear   FinancialYear @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+  category        String
+  trancheNumber   Int
+  amountAllocated Decimal       @db.Decimal(14, 2)
+  dateAllocated   DateTime
+
+  expenditures Expenditure[]
+
+  @@index([entityId, financialYearId])
+}
+
+model Expenditure {
+  id               String         @id @default(cuid())
+  fundAllocationId String
+  fundAllocation   FundAllocation @relation(fields: [fundAllocationId], references: [id], onDelete: Cascade)
+  amountSpent      Decimal        @db.Decimal(14, 2)
+  category         String
+  description      String?
+  recordedAt       DateTime       @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Audit history
+// ---------------------------------------------------------------------------
+
+model AuditFinding {
+  id              String              @id @default(cuid())
+  entityId        String
+  entity          Entity              @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  financialYearId String
+  financialYear   FinancialYear       @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+  category        String
+  severity        AuditSeverity
+  status          AuditFindingStatus  @default(OPEN)
+  auditorOpinion  AuditOpinion
+  description     String
+  resolvedAt      DateTime?
+  createdAt       DateTime            @default(now())
+
+  @@index([entityId, financialYearId])
+}
+
+// ---------------------------------------------------------------------------
+// Workforce (aggregated only — no individual employee records, per POPIA)
+// ---------------------------------------------------------------------------
+
+model WorkforceStat {
+  id                 String            @id @default(cuid())
+  entityId           String
+  entity             Entity            @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  financialYearId    String
+  financialYear      FinancialYear     @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+  gender             Gender
+  raceCategory       RaceCategory
+  ageBand            AgeBand
+  disabilityStatus   DisabilityStatus
+  headcount          Int
+  piiClassification  PiiClassification @default(AGGREGATED)
+
+  @@unique([entityId, financialYearId, gender, raceCategory, ageBand, disabilityStatus])
+}
+
+model JobCreation {
+  id              String        @id @default(cuid())
+  entityId        String
+  entity          Entity        @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  financialYearId String
+  financialYear   FinancialYear @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+  jobType         JobType
+  count           Int
+
+  @@unique([entityId, financialYearId, jobType])
+}
+
+// ---------------------------------------------------------------------------
+// Documents
+// ---------------------------------------------------------------------------
+
+model Document {
+  id                String          @id @default(cuid())
+  entityId          String
+  entity            Entity          @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  reportingPeriodId String?
+  reportingPeriod   ReportingPeriod? @relation(fields: [reportingPeriodId], references: [id])
+  type              DocumentType
+  title             String
+  retentionUntil    DateTime?
+  deletedAt         DateTime?
+  createdAt         DateTime        @default(now())
+
+  versions DocumentVersion[]
+  comments Comment[]
+
+  @@index([entityId, type])
+}
+
+model DocumentVersion {
+  id             String       @id @default(cuid())
+  documentId     String
+  document       Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  versionNumber  Int
+  storageKey     String
+  checksum       String
+  fileSize       Int
+  mimeType       String
+  authorId       String
+  author         User         @relation("DocumentVersionAuthor", fields: [authorId], references: [id])
+  changeNote     String?
+  reviewStatus   ReviewStatus @default(SUBMITTED)
+  reviewedById   String?
+  reviewedBy     User?        @relation("DocumentVersionReviewer", fields: [reviewedById], references: [id])
+  reviewedAt     DateTime?
+  reviewComment  String?
+  aiSummary      String?
+  aiFlags        Json?
+  createdAt      DateTime     @default(now())
+
+  comments Comment[]
+
+  @@unique([documentId, versionNumber])
+}
+
+// ---------------------------------------------------------------------------
+// Collaboration
+// ---------------------------------------------------------------------------
+
+model Comment {
+  id                String           @id @default(cuid())
+  entityId          String
+  entity            Entity           @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  authorId          String
+  author            User             @relation(fields: [authorId], references: [id])
+  documentId        String?
+  document          Document?        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentVersionId String?
+  documentVersion   DocumentVersion? @relation(fields: [documentVersionId], references: [id], onDelete: Cascade)
+  kpiId             String?
+  kpi               Kpi?             @relation(fields: [kpiId], references: [id], onDelete: Cascade)
+  taskId            String?
+  task              Task?            @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  parentId          String?
+  parent            Comment?         @relation("CommentThread", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  replies           Comment[]        @relation("CommentThread")
+  body              String
+  mentionedUserIds  String[]
+  resolved          Boolean          @default(false)
+  createdAt         DateTime         @default(now())
+
+  @@index([entityId])
+  @@index([documentId])
+  @@index([taskId])
+}
+
+model Task {
+  id           String        @id @default(cuid())
+  entityId     String
+  entity       Entity        @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  title        String
+  description  String?
+  assigneeId   String
+  assignee     User          @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  assignerId   String
+  assigner     User          @relation("TaskAssigner", fields: [assignerId], references: [id])
+  direction    TaskDirection
+  status       TaskStatus    @default(TODO)
+  dueDate      DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  comments Comment[]
+
+  @@index([entityId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Deadlines, notifications, risk
+// ---------------------------------------------------------------------------
+
+model Deadline {
+  id                String            @id @default(cuid())
+  entityId          String?
+  entity            Entity?           @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  reportingPeriodId String?
+  reportingPeriod   ReportingPeriod?  @relation(fields: [reportingPeriodId], references: [id])
+  title             String
+  description       String?
+  category          DeadlineCategory
+  dueDate           DateTime
+  createdAt         DateTime          @default(now())
+
+  @@index([dueDate])
+  @@index([entityId])
+}
+
+model Notification {
+  id        String              @id @default(cuid())
+  userId    String
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityId  String?
+  entity    Entity?             @relation(fields: [entityId], references: [id])
+  channel   NotificationChannel
+  type      NotificationType
+  title     String
+  body      String
+  link      String?
+  read      Boolean             @default(false)
+  createdAt DateTime            @default(now())
+
+  @@index([userId, read])
+}
+
+model RiskScore {
+  id          String   @id @default(cuid())
+  entityId    String
+  entity      Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  kpiId       String?
+  kpi         Kpi?     @relation(fields: [kpiId], references: [id], onDelete: Cascade)
+  score       Int
+  band        RiskBand
+  factors     Json
+  computedAt  DateTime @default(now())
+
+  @@index([entityId, computedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Audit log (append-only)
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  entityId  String?
+  entity    Entity?  @relation(fields: [entityId], references: [id])
+  action    String
+  targetType String
+  targetId  String?
+  ipAddress String?
+  before    Json?
+  after     Json?
+  createdAt DateTime @default(now())
+
+  @@index([targetType, targetId])
+  @@index([userId])
+  @@index([createdAt])
+}
