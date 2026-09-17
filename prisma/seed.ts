@@ -789,6 +789,62 @@ async function main() {
     }
   }
 
+  console.log("Creating tasks and comments...");
+  const TASK_TEMPLATES: { title: string; direction: "INTERNAL" | "TO_DSAC" | "FROM_DSAC" }[] = [
+    { title: "Resubmit returned quarterly report", direction: "FROM_DSAC" },
+    { title: "Follow up on outstanding audit finding", direction: "FROM_DSAC" },
+    { title: "Request clarification on reported variance", direction: "TO_DSAC" },
+    { title: "Prepare board sign-off for annual report", direction: "INTERNAL" },
+    { title: "Compile evidence for KPI achievement", direction: "INTERNAL" },
+  ];
+  const COMMENT_TEMPLATES = [
+    "Uploaded the latest quarterly report — please review when you get a chance.",
+    "We're still waiting on sign-off from the finance team for this quarter's figures.",
+    "Thanks for the quick turnaround on the last review.",
+    "Flagging that our Q2 submission may be a few days late this cycle.",
+  ];
+
+  for (const seed of ENTITY_SEEDS) {
+    const entity = entityRecords.get(seed.slug)!;
+    const entityUserIds = usersByEntity.get(entity.id) ?? [];
+    if (entityUserIds.length === 0) continue;
+
+    const templates = pickN(TASK_TEMPLATES, faker.number.int({ min: 2, max: 4 }));
+    for (const template of templates) {
+      const assigneeId = template.direction === "TO_DSAC" ? faker.helpers.arrayElement(dsacReviewerIds) : faker.helpers.arrayElement(entityUserIds);
+      const assignerId = template.direction === "FROM_DSAC" ? faker.helpers.arrayElement(dsacReviewerIds) : faker.helpers.arrayElement(entityUserIds);
+      const status = faker.helpers.weightedArrayElement([
+        { value: "TODO" as const, weight: 4 },
+        { value: "IN_PROGRESS" as const, weight: 3 },
+        { value: "DONE" as const, weight: 2 },
+        { value: "BLOCKED" as const, weight: 1 },
+      ]);
+
+      await prisma.task.create({
+        data: {
+          entityId: entity.id,
+          title: template.title,
+          assigneeId,
+          assignerId,
+          direction: template.direction,
+          status,
+          dueDate: faker.date.soon({ days: 30, refDate: TODAY }),
+        },
+      });
+    }
+
+    if (faker.number.float({ min: 0, max: 1 }) < 0.4) {
+      await prisma.comment.create({
+        data: {
+          entityId: entity.id,
+          authorId: faker.helpers.arrayElement(entityUserIds),
+          body: faker.helpers.arrayElement(COMMENT_TEMPLATES),
+          mentionedUserIds: [],
+        },
+      });
+    }
+  }
+
   console.log("Computing initial risk scores (weighted model + trained logistic regression)...");
   const riskScoreCount = await recalculateAllRiskScores();
 

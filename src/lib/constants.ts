@@ -1,4 +1,4 @@
-import type { Role, Sector, EntityType, Gender, RaceCategory, AgeBand, DisabilityStatus, AuditOpinion, JobType, Quarter, DocumentType } from "@prisma/client";
+import type { Role, Sector, EntityType, Gender, RaceCategory, AgeBand, DisabilityStatus, AuditOpinion, JobType, Quarter, DocumentType, TaskDirection, TaskStatus } from "@prisma/client";
 
 export const APP_NAME = "DSAC Performance & Reporting Platform";
 export const DEMO_BANNER = "Demo – synthetic data";
@@ -170,4 +170,25 @@ export function getDeadlineHourlyWindowHours(): number {
   const raw = process.env.DEADLINE_ALERT_HOURLY_WITHIN_HOURS ?? "24";
   const parsed = parseInt(raw, 10);
   return Number.isNaN(parsed) ? 24 : parsed;
+}
+
+export const TASK_DIRECTION_LABELS: Record<TaskDirection, string> = {
+  INTERNAL: "Within entity",
+  TO_DSAC: "To DSAC",
+  FROM_DSAC: "From DSAC",
+};
+
+export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
+  TODO: "To do",
+  IN_PROGRESS: "In progress",
+  DONE: "Done",
+  BLOCKED: "Blocked",
+};
+
+export const TASK_STATUS_ORDER: TaskStatus[] = ["TODO", "IN_PROGRESS", "BLOCKED", "DONE"];
+
+/** Directions a role may create a task with — entity roles request/delegate within their scope, DSAC roles delegate down to an entity. */
+export function taskDirectionsForRole(role: Role): TaskDirection[] {
+  if (isDsacWideRole(role)) return ["FROM_DSAC"];
+  return ["INTERNAL", "TO_DSAC"];
 }

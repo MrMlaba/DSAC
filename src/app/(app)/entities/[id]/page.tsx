@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RiskBadge } from "@/components/risk-badge";
 import { KpiExplorer } from "@/components/kpi-explorer";
 import { FinanceChart } from "@/components/finance-chart";
@@ -9,9 +11,14 @@ import { JobCreationChart } from "@/components/job-creation-chart";
 import { AuditHistory } from "@/components/audit-history";
 import { CategoryBars } from "@/components/category-bars";
 import { EntityFinancialYearSelect } from "@/components/entity-financial-year-select";
+import { TeamMembersList } from "@/components/team-members-list";
+import { CommentsFeed } from "@/components/comments-feed";
+import { DeadlineList } from "@/components/deadline-list";
 import { requireUser } from "@/lib/current-user";
 import { getEntityDetail } from "@/lib/data/entity-detail";
-import { SECTOR_LABELS, ENTITY_TYPE_LABELS, GENDER_LABELS, RACE_LABELS, AGE_BAND_LABELS, DISABILITY_LABELS } from "@/lib/constants";
+import { listTeamMembers, listComments } from "@/lib/data/comments";
+import { listDeadlinesForEntity } from "@/lib/data/deadlines";
+import { isReadOnlyRole, SECTOR_LABELS, ENTITY_TYPE_LABELS, GENDER_LABELS, RACE_LABELS, AGE_BAND_LABELS, DISABILITY_LABELS } from "@/lib/constants";
 import { KPI_STATUS_LABELS, KPI_STATUS_COLORS } from "@/lib/risk-visuals";
 
 export default async function EntityDetailPage({
@@ -35,6 +42,12 @@ export default async function EntityDetailPage({
 
   const { entity, risk, financialYears, selectedFinancialYear, kpisForYear, kpiYoY, finance, auditHistory, workforceStats, jobCreationByYear } =
     detail;
+
+  const [teamMembers, comments, deadlines] = await Promise.all([
+    listTeamMembers(user, id),
+    listComments(user, { entityId: id }),
+    listDeadlinesForEntity(user, id),
+  ]);
 
   const genderTotals = new Map<string, number>();
   const raceTotals = new Map<string, number>();
@@ -68,6 +81,13 @@ export default async function EntityDetailPage({
         <EntityFinancialYearSelect financialYears={financialYears} />
       </div>
 
+      <Tabs defaultValue="performance">
+        <TabsList>
+          <TabsTrigger value="performance">Performance</TabsTrigger>
+          <TabsTrigger value="workspace">Workspace</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="performance" className="space-y-6">
       <Card>
         <CardHeader>
           <CardTitle className="text-base">KPI progress — FY {selectedFinancialYear.label}</CardTitle>
@@ -178,6 +198,56 @@ export default async function EntityDetailPage({
           )}
         </CardContent>
       </Card>
+        </TabsContent>
+
+        <TabsContent value="workspace" className="space-y-6">
+          <div className="grid gap-6 lg:grid-cols-3">
+            <div className="space-y-6 lg:col-span-2">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Comments</CardTitle>
+                  <CardDescription>Entity-wide discussion — visible to everyone with access to this entity.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <CommentsFeed
+                    entityId={id}
+                    anchor={{}}
+                    initialComments={comments.map((c) => ({
+                      ...c,
+                      createdAt: c.createdAt.toISOString(),
+                      replies: c.replies.map((r) => ({ ...r, createdAt: r.createdAt.toISOString(), replies: [] })),
+                    }))}
+                    teamMembers={teamMembers}
+                    currentUserId={user.id}
+                    canComment={!isReadOnlyRole(user.role)}
+                  />
+                </CardContent>
+              </Card>
+            </div>
+            <div className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Team</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <TeamMembersList members={teamMembers} />
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Deadlines</CardTitle>
+                  <CardDescription>
+                    See <Link href="/tasks" className="underline underline-offset-2">Tasks</Link> for the kanban board.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <DeadlineList deadlines={deadlines} dsacWide={false} />
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

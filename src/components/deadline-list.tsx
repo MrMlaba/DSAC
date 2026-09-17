@@ -2,6 +2,7 @@ import { CheckCircle2Icon, CircleIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CountdownTimer } from "@/components/countdown-timer";
+import { SyncCalendarButton } from "@/components/sync-calendar-button";
 import type { DeadlineView } from "@/lib/data/deadlines";
 
 export function DeadlineList({ deadlines, dsacWide }: { deadlines: DeadlineView[]; dsacWide: boolean }) {
@@ -37,7 +38,10 @@ export function DeadlineList({ deadlines, dsacWide }: { deadlines: DeadlineView[
                 Due {new Date(d.dueDate).toLocaleDateString("en-ZA")}
               </Badge>
             </div>
-            <CountdownTimer dueDate={d.dueDate} />
+            <div className="flex items-center justify-between gap-2">
+              <CountdownTimer dueDate={d.dueDate} />
+              <SyncCalendarButton deadlineId={d.id} />
+            </div>
 
             {!dsacWide && d.isSatisfiedForViewer !== null && (
               <p className={`flex items-center gap-1 text-xs ${d.isSatisfiedForViewer ? "text-[var(--status-good)]" : "text-muted-foreground"}`}>

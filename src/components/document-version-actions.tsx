@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { DownloadIcon, EyeIcon, HistoryIcon, Loader2Icon } from "lucide-react";
+import { DownloadIcon, EyeIcon, HistoryIcon, Loader2Icon, ExternalLinkIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
@@ -24,6 +24,7 @@ export function DocumentVersionActions({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(false);
+  const [openingSharePoint, setOpeningSharePoint] = useState(false);
 
   const canPreviewInline = PREVIEWABLE_TEXT_TYPES.includes(mimeType);
   const canPreviewPdf = mimeType === "application/pdf";
@@ -33,6 +34,23 @@ export function DocumentVersionActions({
     setPreviewText(null);
     const res = await fetch(`/api/documents/versions/${versionId}/preview`);
     setPreviewText(res.ok ? await res.text() : "Unable to load preview.");
+  }
+
+  async function openInSharePoint() {
+    setOpeningSharePoint(true);
+    try {
+      const res = await fetch(`/api/documents/versions/${versionId}/sharepoint-url`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to get SharePoint link.");
+      if (!data.configured) {
+        toast.info("Microsoft Graph isn't configured — this is a mock SharePoint link for the demo.");
+      }
+      window.open(data.url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to get SharePoint link.");
+    } finally {
+      setOpeningSharePoint(false);
+    }
   }
 
   async function restore() {
@@ -64,6 +82,9 @@ export function DocumentVersionActions({
       )}
       <Button size="icon-sm" variant="ghost" title="Download" render={<a href={`/api/documents/versions/${versionId}/download`} />}>
         <DownloadIcon />
+      </Button>
+      <Button size="icon-sm" variant="ghost" title="Open in SharePoint" disabled={openingSharePoint} onClick={openInSharePoint}>
+        {openingSharePoint ? <Loader2Icon className="animate-spin" /> : <ExternalLinkIcon />}
       </Button>
       {!isLatest && canRestore && (
         <Button size="icon-sm" variant="ghost" title="Restore this version" disabled={restoring} onClick={restore}>

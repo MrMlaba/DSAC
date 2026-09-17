@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { isDsacWideRole } from "@/lib/constants";
-import type { CurrentUser } from "@/lib/tenant-scope";
+import { assertEntityAccess, type CurrentUser } from "@/lib/tenant-scope";
 import type { DeadlineCategory, DocumentType } from "@prisma/client";
 
 const CATEGORY_TO_DOCUMENT_TYPE: Partial<Record<DeadlineCategory, DocumentType>> = {
@@ -25,6 +25,28 @@ export interface DeadlineView {
   compliance: { satisfied: number; total: number; outstandingEntities: { id: string; name: string }[] } | null;
 }
 
+function satisfiedKey(entityId: string, reportingPeriodId: string) {
+  return `${entityId}|${reportingPeriodId}`;
+}
+
+async function computeSatisfiedSet(): Promise<Set<string>> {
+  const documents = await prisma.document.findMany({
+    where: { deletedAt: null, reportingPeriodId: { not: null } },
+    select: {
+      entityId: true,
+      reportingPeriodId: true,
+      versions: { orderBy: { versionNumber: "desc" }, take: 1, select: { reviewStatus: true } },
+    },
+  });
+  const satisfied = new Set<string>();
+  for (const doc of documents) {
+    if (doc.versions[0]?.reviewStatus && doc.versions[0].reviewStatus !== "RETURNED") {
+      satisfied.add(satisfiedKey(doc.entityId, doc.reportingPeriodId!));
+    }
+  }
+  return satisfied;
+}
+
 export async function listDeadlines(user: CurrentUser): Promise<DeadlineView[]> {
   const dsacWide = isDsacWideRole(user.role);
   const now = new Date();
@@ -35,23 +57,7 @@ export async function listDeadlines(user: CurrentUser): Promise<DeadlineView[]> 
   });
 
   const entities = await prisma.entity.findMany({ select: { id: true, name: true } });
-
-  const documents = await prisma.document.findMany({
-    where: { deletedAt: null, reportingPeriodId: { not: null } },
-    select: {
-      entityId: true,
-      reportingPeriodId: true,
-      type: true,
-      versions: { orderBy: { versionNumber: "desc" }, take: 1, select: { reviewStatus: true } },
-    },
-  });
-  const satisfiedKey = (entityId: string, reportingPeriodId: string) => `${entityId}|${reportingPeriodId}`;
-  const satisfied = new Set<string>();
-  for (const doc of documents) {
-    if (doc.versions[0]?.reviewStatus && doc.versions[0].reviewStatus !== "RETURNED") {
-      satisfied.add(satisfiedKey(doc.entityId, doc.reportingPeriodId!));
-    }
-  }
+  const satisfied = await computeSatisfiedSet();
 
   return deadlines.map((d) => {
     const docType = CATEGORY_TO_DOCUMENT_TYPE[d.category];
@@ -78,6 +84,38 @@ export async function listDeadlines(user: CurrentUser): Promise<DeadlineView[]> 
       daysRemaining,
       isSatisfiedForViewer,
       compliance,
+    };
+  });
+}
+
+/** Deadline status for one specific entity, regardless of the viewer's own role/entity — used by the entity workspace tab. */
+export async function listDeadlinesForEntity(user: CurrentUser, entityId: string): Promise<DeadlineView[]> {
+  assertEntityAccess(user, entityId);
+  const now = new Date();
+
+  const [deadlines, satisfied] = await Promise.all([
+    prisma.deadline.findMany({
+      include: { reportingPeriod: { include: { financialYear: { select: { label: true } } } } },
+      orderBy: { dueDate: "asc" },
+    }),
+    computeSatisfiedSet(),
+  ]);
+
+  return deadlines.map((d) => {
+    const docType = CATEGORY_TO_DOCUMENT_TYPE[d.category];
+    const daysRemaining = Math.ceil((d.dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    const isSatisfiedForViewer = docType && d.reportingPeriodId ? satisfied.has(satisfiedKey(entityId, d.reportingPeriodId)) : null;
+
+    return {
+      id: d.id,
+      title: d.title,
+      category: d.category,
+      dueDate: d.dueDate,
+      quarter: d.reportingPeriod?.quarter ?? null,
+      financialYearLabel: d.reportingPeriod?.financialYear.label ?? null,
+      daysRemaining,
+      isSatisfiedForViewer,
+      compliance: null,
     };
   });
 }

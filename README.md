@@ -28,9 +28,10 @@ password: `Demo@2026`).
 1. `docker compose up -d` — Postgres, MinIO (S3-compatible file storage) and Mailpit (SMTP catcher).
 2. `prisma migrate deploy` — applies the schema.
 3. `tsx prisma/seed.ts` — seeds 26 Public Entities + 6 NPOs, 3 financial years of KPIs/finance/audit
-   history, workforce stats, job-creation figures, demo users across all 5 roles, and ~480 documents
+   history, workforce stats, job-creation figures, demo users across all 5 roles, ~480 documents
    (strategic plans, APPs, quarterly/annual reports) with realistic version and review history —
-   uploaded as real files to the local MinIO bucket, not just DB rows.
+   uploaded as real files to the local MinIO bucket, not just DB rows — plus a starter set of tasks
+   and comments per entity so the workspace tab and kanban board aren't empty on first run.
 
 Re-run `pnpm db:seed` any time to reset the synthetic story (it's idempotent — it clears and re-seeds). It
 also computes real risk scores (weighted model + trained logistic regression) at the end, so the demo has
@@ -72,7 +73,7 @@ password. Every seeded entity actually has at least one admin + one contributor 
 sign in as any of the other 32 entities directly (`admin.<entity-slug>@<entity-slug>.demo.org`, same
 shared password).
 
-## What's real vs. mocked right now (Phase 4)
+## What's real vs. mocked right now (Phase 5)
 
 | Area | Status |
 |---|---|
@@ -87,10 +88,15 @@ shared password).
 | Document diffing | Not built — the brief's "diff for text-extractable docs" isn't implemented; version history + restore are |
 | Early warning engine (Module B) | Real — transparent weighted score (progress vs. trajectory, submission lateness, unresolved audit findings, returned documents, deadline proximity, spend/delivery mismatch) with a per-factor "why am I seeing this?" breakdown, plus a small logistic regression (trained on this platform's own synthetic history — see `src/lib/risk-engine.ts`) predicting P(miss target) and P(late submission). Recalculated on a schedule by `scripts/worker.ts` (pg-boss), or on demand via "Recalculate now" |
 | Deadlines & countdowns | Real — live-ticking countdown timers, per-entity submission status, and a DSAC-only compliance-gap view (which entities still owe a submission for a given deadline) |
-| Notifications | Real in-app (bell with unread count, polls every 30s) and email (via Mailpit); Teams is a real webhook POST when `TEAMS_WEBHOOK_URL` is set, else a logged no-op. Deadline reminders fire at the configured day thresholds, then daily, then hourly in the final window (`DEADLINE_ALERT_DAYS` / `DEADLINE_ALERT_HOURLY_WITHIN_HOURS`), escalating to DSAC once overdue. True push delivery (SSE) is Phase 5 — for now the bell polls |
+| Notifications | Real in-app (bell with unread count, polls every 30s) and email (via Mailpit); Teams is a real webhook POST when `TEAMS_WEBHOOK_URL` is set, else a logged no-op. Deadline reminders fire at the configured day thresholds, then daily, then hourly in the final window (`DEADLINE_ALERT_DAYS` / `DEADLINE_ALERT_HOURLY_WITHIN_HOURS`), escalating to DSAC once overdue |
 | Weekly risk briefing | Real notification, template-narrated for now (top critical/high entities) — Phase 6 swaps the template for an AI-generated narrative from the same data |
+| Tasks (Module D) | Real — kanban board (To do/In progress/Blocked/Done), assignable within an entity, to DSAC, or from DSAC to an entity; tenant-scoped, notifies the assignee. Status changes via buttons, not drag-and-drop (no DnD library wired up) |
+| Real-time comments (Module D) | Real — Server-Sent Events backed by Postgres `LISTEN`/`NOTIFY` (`src/lib/realtime/`), not polling. Threaded replies, @mentions (creates a notification), resolve flag, and a live presence indicator (who else is viewing this entity's workspace right now). Anchored to an entity's general feed here; the same `Comment` model supports anchoring to a document, KPI or task |
+| Team members (Module D) | Real — per-entity roster, on the entity workspace tab |
+| Deadlines calendar (Module D) | Real — same countdown/compliance view as Early Warning, scoped to one entity, on the workspace tab |
+| Microsoft Graph integration layer (Module D) | Interface + mock only (`src/lib/microsoft/graph.ts`) — no real Azure AD app registration to test a live one against. "Open in SharePoint" and "Add to calendar" buttons call it and clearly say "(mock)" when unconfigured. Scopes a real implementation would need are documented in `src/lib/microsoft/README.md` |
 | "Ask the data" (Module A) | Not built yet — lands in Phase 6 with the other AI features |
-| Workspaces, remaining AI features | Not built yet — placeholder routes exist with phase labels |
+| Remaining AI features | Not built yet — placeholder routes exist with phase labels |
 
 Dev-mode note: this repo's `next.config.ts` caps the webpack build-worker pool (`experimental.cpus: 2`) and disables the dev filesystem cache. On memory-constrained machines, Next's default worker count (scales with CPU count) could exhaust RAM mid-compile on heavier pages and crash the dev server — this setting avoids that. If you're on a machine with plenty of headroom, it's safe to raise or remove.
 
@@ -141,7 +147,7 @@ throughout:
 - [x] **Phase 2** — DSAC portfolio dashboard + entity drill-down (Module A).
 - [x] **Phase 3** — document repository with versioning and review workflow (Module C).
 - [x] **Phase 4** — early-warning engine, deadlines, countdowns, notifications (Module B).
-- [ ] Phase 5 — workspaces: tasks, real-time comments, Microsoft integration layer (Module D).
+- [x] **Phase 5** — workspaces: tasks, real-time comments, Microsoft integration layer (Module D).
 - [ ] Phase 6 — AI features: briefings, document extraction, ask-the-data (Module A/B/C, mocked).
 - [ ] Phase 7 — security hardening, audit log viewer, `SECURITY.md`, tests, PWA polish (Module E).
 - [ ] Phase 8 — demo script (`docs/DEMO.md`).
