@@ -9,6 +9,7 @@ import { ProportionBar, MagnitudeBar } from "@/components/proportion-bar";
 import { PortfolioFilters } from "@/components/portfolio-filters";
 import { EntityCard } from "@/components/entity-card";
 import { ExportButtons } from "@/components/export-buttons";
+import { AskTheData } from "@/components/ask-the-data";
 
 export default async function DashboardPage({
   searchParams,
@@ -116,6 +117,8 @@ export default async function DashboardPage({
           </CardContent>
         </Card>
       </div>
+
+      <AskTheData />
 
       <div>
         <div className="mb-3 flex items-center justify-between">

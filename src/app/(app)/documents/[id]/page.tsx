@@ -8,6 +8,7 @@ import { canReviewDocuments, canUploadDocuments, DOCUMENT_TYPE_LABELS, isDsacWid
 import { ReviewStatusBadge } from "@/components/review-status-badge";
 import { DocumentReviewActions } from "@/components/document-review-actions";
 import { DocumentVersionActions } from "@/components/document-version-actions";
+import { DocumentAiAssist } from "@/components/document-ai-assist";
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -61,6 +62,18 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
           </CardHeader>
           <CardContent>
             <DocumentReviewActions versionId={latest.id} status={latest.reviewStatus} />
+          </CardContent>
+        </Card>
+      )}
+
+      {canReviewDocuments(user.role) && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">AI assist</CardTitle>
+            <CardDescription>Extracts key figures and checks them against recorded KPI actuals for this period.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <DocumentAiAssist versionId={latest.id} existingSummary={latest.aiSummary} />
           </CardContent>
         </Card>
       )}

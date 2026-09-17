@@ -73,7 +73,7 @@ password. Every seeded entity actually has at least one admin + one contributor 
 sign in as any of the other 32 entities directly (`admin.<entity-slug>@<entity-slug>.demo.org`, same
 shared password).
 
-## What's real vs. mocked right now (Phase 5)
+## What's real vs. mocked right now (Phase 6)
 
 | Area | Status |
 |---|---|
@@ -89,14 +89,15 @@ shared password).
 | Early warning engine (Module B) | Real — transparent weighted score (progress vs. trajectory, submission lateness, unresolved audit findings, returned documents, deadline proximity, spend/delivery mismatch) with a per-factor "why am I seeing this?" breakdown, plus a small logistic regression (trained on this platform's own synthetic history — see `src/lib/risk-engine.ts`) predicting P(miss target) and P(late submission). Recalculated on a schedule by `scripts/worker.ts` (pg-boss), or on demand via "Recalculate now" |
 | Deadlines & countdowns | Real — live-ticking countdown timers, per-entity submission status, and a DSAC-only compliance-gap view (which entities still owe a submission for a given deadline) |
 | Notifications | Real in-app (bell with unread count, polls every 30s) and email (via Mailpit); Teams is a real webhook POST when `TEAMS_WEBHOOK_URL` is set, else a logged no-op. Deadline reminders fire at the configured day thresholds, then daily, then hourly in the final window (`DEADLINE_ALERT_DAYS` / `DEADLINE_ALERT_HOURLY_WITHIN_HOURS`), escalating to DSAC once overdue |
-| Weekly risk briefing | Real notification, template-narrated for now (top critical/high entities) — Phase 6 swaps the template for an AI-generated narrative from the same data |
+| Weekly risk briefing | Real Claude-generated narrative + recommended actions when `ANTHROPIC_API_KEY` is set; a deterministic template (same top critical/high entities) when it isn't |
 | Tasks (Module D) | Real — kanban board (To do/In progress/Blocked/Done), assignable within an entity, to DSAC, or from DSAC to an entity; tenant-scoped, notifies the assignee. Status changes via buttons, not drag-and-drop (no DnD library wired up) |
 | Real-time comments (Module D) | Real — Server-Sent Events backed by Postgres `LISTEN`/`NOTIFY` (`src/lib/realtime/`), not polling. Threaded replies, @mentions (creates a notification), resolve flag, and a live presence indicator (who else is viewing this entity's workspace right now). Anchored to an entity's general feed here; the same `Comment` model supports anchoring to a document, KPI or task |
 | Team members (Module D) | Real — per-entity roster, on the entity workspace tab |
 | Deadlines calendar (Module D) | Real — same countdown/compliance view as Early Warning, scoped to one entity, on the workspace tab |
 | Microsoft Graph integration layer (Module D) | Interface + mock only (`src/lib/microsoft/graph.ts`) — no real Azure AD app registration to test a live one against. "Open in SharePoint" and "Add to calendar" buttons call it and clearly say "(mock)" when unconfigured. Scopes a real implementation would need are documented in `src/lib/microsoft/README.md` |
-| "Ask the data" (Module A) | Not built yet — lands in Phase 6 with the other AI features |
-| Remaining AI features | Not built yet — placeholder routes exist with phase labels |
+| "Ask the data" (Module A) | Real — a dashboard box answers natural-language questions using a fixed set of tenant-scoped query tools (`src/lib/ai/ask-the-data.ts`), never raw SQL against the DB. Each tool is a thin wrapper around a data-access function the rest of the app already uses, so tenant isolation and RBAC come for free — an entity user's questions can only ever surface their own entity's data. Without `ANTHROPIC_API_KEY`, a keyword router calls the same tools directly and answers from the same real data, just without an LLM synthesizing the phrasing |
+| Document AI assist (Module C) | Real — a reviewer-triggered "Run AI analysis" button on the document detail page extracts key figures, summarises, and flags inconsistencies against the entity's recorded KPI actuals for that period, via Claude structured outputs. Always shown as suggestions for the human reviewer; never auto-approves or auto-returns anything. Text-based documents only (`text/plain`/`text/csv` — matches what's actually extractable today); Word/Excel/PDF show a plain "not available" note. Mocked to an honest placeholder, not a fake analysis, when unconfigured |
+| AI safeguards | PII redaction (`src/lib/ai/redact.ts`, unit-tested) applied to all free text before it reaches Claude — document content and user questions alike; every AI call (mocked or real) is logged via the existing append-only `AuditLog` (`src/lib/ai/audit.ts`); document AI output is always a suggestion, never a decision |
 
 Dev-mode note: this repo's `next.config.ts` caps the webpack build-worker pool (`experimental.cpus: 2`) and disables the dev filesystem cache. On memory-constrained machines, Next's default worker count (scales with CPU count) could exhaust RAM mid-compile on heavier pages and crash the dev server — this setting avoids that. If you're on a machine with plenty of headroom, it's safe to raise or remove.
 
@@ -148,6 +149,6 @@ throughout:
 - [x] **Phase 3** — document repository with versioning and review workflow (Module C).
 - [x] **Phase 4** — early-warning engine, deadlines, countdowns, notifications (Module B).
 - [x] **Phase 5** — workspaces: tasks, real-time comments, Microsoft integration layer (Module D).
-- [ ] Phase 6 — AI features: briefings, document extraction, ask-the-data (Module A/B/C, mocked).
+- [x] **Phase 6** — AI features: briefings, document extraction, ask-the-data (Module A/B/C).
 - [ ] Phase 7 — security hardening, audit log viewer, `SECURITY.md`, tests, PWA polish (Module E).
 - [ ] Phase 8 — demo script (`docs/DEMO.md`).
