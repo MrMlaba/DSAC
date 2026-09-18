@@ -192,3 +192,32 @@ export function taskDirectionsForRole(role: Role): TaskDirection[] {
   if (isDsacWideRole(role)) return ["FROM_DSAC"];
   return ["INTERNAL", "TO_DSAC"];
 }
+
+/** Only DSAC Admin sees the audit log — matches the existing /audit-log nav gating from Phase 1. */
+export const AUDIT_LOG_ROLES: Role[] = ["DSAC_ADMIN"];
+
+export function canViewAuditLog(role: Role): boolean {
+  return AUDIT_LOG_ROLES.includes(role);
+}
+
+/** Only DSAC Admin can delete/restore documents — the most consequential document action, kept the narrowest. */
+export function canDeleteDocuments(role: Role): boolean {
+  return role === "DSAC_ADMIN";
+}
+
+/** Default retention period per document type, matching typical public-sector record-keeping practice. Advisory/display-only in this prototype — see docs/SECURITY.md. */
+export const DOCUMENT_RETENTION_YEARS: Record<DocumentType, number> = {
+  STRATEGIC_PLAN: 10,
+  APP: 5,
+  OPERATIONAL_PLAN: 5,
+  ANNUAL_REPORT: 7,
+  QUARTERLY_REPORT: 5,
+  FINANCIALS: 7,
+  OTHER: 5,
+};
+
+export function computeRetentionUntil(type: DocumentType, from: Date = new Date()): Date {
+  const result = new Date(from);
+  result.setFullYear(result.getFullYear() + DOCUMENT_RETENTION_YEARS[type]);
+  return result;
+}

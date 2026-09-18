@@ -62,7 +62,11 @@ export default async function LoginPage({
             <Alert variant="destructive">
               <AlertCircleIcon />
               <AlertTitle>Sign in failed</AlertTitle>
-              <AlertDescription>Invalid email or password. Please try again.</AlertDescription>
+              <AlertDescription>
+                {error === "rate_limited"
+                  ? "Too many sign-in attempts. Please wait a minute and try again."
+                  : "Invalid email or password. Please try again."}
+              </AlertDescription>
             </Alert>
           )}
 

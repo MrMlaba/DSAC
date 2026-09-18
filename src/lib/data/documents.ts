@@ -1,13 +1,16 @@
 import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { storage } from "@/lib/storage";
+import { logAudit } from "@/lib/data/audit";
 import { assertEntityAccess, entityIdScopeWhere, entityScopeWhere, type CurrentUser } from "@/lib/tenant-scope";
 import {
   ALLOWED_UPLOAD_MIME_TYPES,
   MAX_UPLOAD_SIZE_BYTES,
   QUARTERLY_DOCUMENT_TYPES,
+  canDeleteDocuments,
   canReviewDocuments,
   canUploadDocuments,
+  computeRetentionUntil,
 } from "@/lib/constants";
 import type { DocumentType, Quarter, ReviewStatus } from "@prisma/client";
 
@@ -93,16 +96,28 @@ export async function listDocuments(user: CurrentUser, filters: DocumentFilters)
 }
 
 /** Loads a version + its parent document, enforcing tenant access. Used by download/preview routes. */
-export async function getVersionWithAccess(user: CurrentUser, versionId: string) {
+export async function getVersionWithAccess(user: CurrentUser, versionId: string, options?: { logAs?: "DOCUMENT_VIEW" | "DOCUMENT_DOWNLOAD"; ipAddress?: string | null }) {
   const version = await prisma.documentVersion.findUniqueOrThrow({
     where: { id: versionId },
     include: { document: true },
   });
   assertEntityAccess(user, version.document.entityId);
+
+  if (options?.logAs) {
+    await logAudit({
+      userId: user.id,
+      entityId: version.document.entityId,
+      action: options.logAs,
+      targetType: "document_version",
+      targetId: versionId,
+      ipAddress: options.ipAddress,
+    });
+  }
+
   return version;
 }
 
-export async function getDocumentDetail(user: CurrentUser, documentId: string) {
+export async function getDocumentDetail(user: CurrentUser, documentId: string, options?: { ipAddress?: string | null }) {
   const document = await prisma.document.findUniqueOrThrow({
     where: { id: documentId },
     include: {
@@ -118,6 +133,16 @@ export async function getDocumentDetail(user: CurrentUser, documentId: string) {
     },
   });
   assertEntityAccess(user, document.entityId);
+
+  await logAudit({
+    userId: user.id,
+    entityId: document.entityId,
+    action: "DOCUMENT_VIEW",
+    targetType: "document",
+    targetId: documentId,
+    ipAddress: options?.ipAddress,
+  });
+
   return document;
 }
 
@@ -163,7 +188,13 @@ export async function createDocumentVersion(
     assertEntityAccess(user, document.entityId);
   } else {
     document = await prisma.document.create({
-      data: { entityId: params.entityId, type: params.type, title: params.title, reportingPeriodId },
+      data: {
+        entityId: params.entityId,
+        type: params.type,
+        title: params.title,
+        reportingPeriodId,
+        retentionUntil: computeRetentionUntil(params.type),
+      },
     });
   }
 
@@ -194,6 +225,15 @@ export async function createDocumentVersion(
     },
   });
 
+  await logAudit({
+    userId: user.id,
+    entityId: params.entityId,
+    action: "DOCUMENT_UPLOAD",
+    targetType: "document_version",
+    targetId: version.id,
+    after: { versionNumber, filename: params.filename, mimeType: params.mimeType, fileSize: params.file.byteLength },
+  });
+
   return { document, version };
 }
 
@@ -217,7 +257,7 @@ export async function reviewDocumentVersion(
 
   const nextStatus: ReviewStatus = action === "start_review" ? "UNDER_REVIEW" : action === "approve" ? "APPROVED" : "RETURNED";
 
-  return prisma.documentVersion.update({
+  const updated = await prisma.documentVersion.update({
     where: { id: versionId },
     data: {
       reviewStatus: nextStatus,
@@ -226,6 +266,18 @@ export async function reviewDocumentVersion(
       reviewComment: action === "return" ? comment : (version.reviewComment ?? undefined),
     },
   });
+
+  await logAudit({
+    userId: user.id,
+    entityId: version.document.entityId,
+    action: action === "start_review" ? "DOCUMENT_START_REVIEW" : action === "approve" ? "DOCUMENT_APPROVE" : "DOCUMENT_RETURN",
+    targetType: "document_version",
+    targetId: versionId,
+    before: { reviewStatus: version.reviewStatus },
+    after: { reviewStatus: nextStatus, comment: action === "return" ? comment : undefined },
+  });
+
+  return updated;
 }
 
 /** Restores an older version by re-submitting its exact content as a new, latest version. */
@@ -256,5 +308,60 @@ export async function restoreDocumentVersion(user: CurrentUser, versionId: strin
       changeNote: `Restored from version ${source.versionNumber}.`,
       reviewStatus: "RECEIVED",
     },
+  });
+}
+
+/** Soft delete — sets deletedAt so the document drops out of every normal listing, but keeps the row (and its file in storage) for the recovery window. See docs/SECURITY.md §5. */
+export async function softDeleteDocument(user: CurrentUser, documentId: string) {
+  if (!canDeleteDocuments(user.role)) {
+    throw new Error("Forbidden: this role cannot delete documents.");
+  }
+  const document = await prisma.document.findUniqueOrThrow({ where: { id: documentId } });
+  assertEntityAccess(user, document.entityId);
+
+  const updated = await prisma.document.update({ where: { id: documentId }, data: { deletedAt: new Date() } });
+
+  await logAudit({
+    userId: user.id,
+    entityId: document.entityId,
+    action: "DOCUMENT_DELETE",
+    targetType: "document",
+    targetId: documentId,
+    before: { deletedAt: null },
+    after: { deletedAt: updated.deletedAt },
+  });
+
+  return updated;
+}
+
+export async function restoreDeletedDocument(user: CurrentUser, documentId: string) {
+  if (!canDeleteDocuments(user.role)) {
+    throw new Error("Forbidden: this role cannot restore documents.");
+  }
+  const document = await prisma.document.findUniqueOrThrow({ where: { id: documentId } });
+  assertEntityAccess(user, document.entityId);
+
+  const updated = await prisma.document.update({ where: { id: documentId }, data: { deletedAt: null } });
+
+  await logAudit({
+    userId: user.id,
+    entityId: document.entityId,
+    action: "DOCUMENT_RESTORE",
+    targetType: "document",
+    targetId: documentId,
+    before: { deletedAt: document.deletedAt },
+    after: { deletedAt: null },
+  });
+
+  return updated;
+}
+
+/** DSAC Admin only — the deleted-documents recovery view. */
+export async function listDeletedDocuments(user: CurrentUser) {
+  const tenantWhere = entityIdScopeWhere(user);
+  return prisma.document.findMany({
+    where: { deletedAt: { not: null }, ...(tenantWhere.id ? { entityId: tenantWhere.id } : {}) },
+    include: { entity: { select: { id: true, name: true } } },
+    orderBy: { deletedAt: "desc" },
   });
 }

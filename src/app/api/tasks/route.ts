@@ -1,33 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/current-user";
 import { createTask } from "@/lib/data/tasks";
-import type { TaskDirection } from "@prisma/client";
+import { checkOrigin } from "@/lib/origin-check";
+import { createTaskSchema } from "@/lib/validation/task";
 
 export async function POST(request: NextRequest) {
+  const originError = checkOrigin(request);
+  if (originError) return originError;
+
   const user = await requireUser();
   const body = await request.json().catch(() => ({}));
-
-  const { entityId, title, description, assigneeId, direction, dueDate } = body as {
-    entityId?: string;
-    title?: string;
-    description?: string;
-    assigneeId?: string;
-    direction?: TaskDirection;
-    dueDate?: string;
-  };
-
-  if (!entityId || !title || !assigneeId || !direction) {
-    return NextResponse.json({ error: "entityId, title, assigneeId and direction are required." }, { status: 400 });
+  const parsed = createTaskSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid request." }, { status: 400 });
   }
 
   try {
     const task = await createTask(user, {
-      entityId,
-      title,
-      description,
-      assigneeId,
-      direction,
-      dueDate: dueDate ? new Date(dueDate) : undefined,
+      ...parsed.data,
+      dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : undefined,
     });
     return NextResponse.json({ taskId: task.id });
   } catch (error) {

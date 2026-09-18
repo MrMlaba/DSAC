@@ -11,6 +11,10 @@ export const metadata: Metadata = {
   title: `${APP_NAME} — Demo`,
   description: "GovTech Hackathon 2026 prototype for DSAC public entity performance and reporting — synthetic data only.",
   manifest: "/manifest.json",
+  icons: {
+    icon: [{ url: "/icons/icon.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/icons/icon.svg", type: "image/svg+xml" }],
+  },
 };
 
 export const viewport: Viewport = {

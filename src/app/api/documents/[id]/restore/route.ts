@@ -1,18 +1,18 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/current-user";
-import { restoreDocumentVersion } from "@/lib/data/documents";
+import { restoreDeletedDocument } from "@/lib/data/documents";
 import { checkOrigin } from "@/lib/origin-check";
 
-export async function POST(request: NextRequest, { params }: { params: Promise<{ versionId: string }> }) {
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const originError = checkOrigin(request);
   if (originError) return originError;
 
   const user = await requireUser();
-  const { versionId } = await params;
+  const { id } = await params;
 
   try {
-    const version = await restoreDocumentVersion(user, versionId);
-    return NextResponse.json({ versionId: version.id, versionNumber: version.versionNumber });
+    await restoreDeletedDocument(user, id);
+    return NextResponse.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Restore failed.";
     return NextResponse.json({ error: message }, { status: message.startsWith("Forbidden") ? 403 : 400 });

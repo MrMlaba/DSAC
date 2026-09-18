@@ -12,10 +12,19 @@
 
 # testing
 /coverage
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
 
 # next.js
 /.next/
 /out/
+
+# next-pwa (generated at build time by next.config.ts's withPWA — see docs/SECURITY.md)
+/public/sw.js
+/public/swe-worker-*.js
+/public/workbox-*.js
 
 # production
 /build

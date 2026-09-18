@@ -73,7 +73,7 @@ password. Every seeded entity actually has at least one admin + one contributor 
 sign in as any of the other 32 entities directly (`admin.<entity-slug>@<entity-slug>.demo.org`, same
 shared password).
 
-## What's real vs. mocked right now (Phase 6)
+## What's real vs. mocked right now (Phase 7)
 
 | Area | Status |
 |---|---|
@@ -98,6 +98,12 @@ shared password).
 | "Ask the data" (Module A) | Real — a dashboard box answers natural-language questions using a fixed set of tenant-scoped query tools (`src/lib/ai/ask-the-data.ts`), never raw SQL against the DB. Each tool is a thin wrapper around a data-access function the rest of the app already uses, so tenant isolation and RBAC come for free — an entity user's questions can only ever surface their own entity's data. Without `ANTHROPIC_API_KEY`, a keyword router calls the same tools directly and answers from the same real data, just without an LLM synthesizing the phrasing |
 | Document AI assist (Module C) | Real — a reviewer-triggered "Run AI analysis" button on the document detail page extracts key figures, summarises, and flags inconsistencies against the entity's recorded KPI actuals for that period, via Claude structured outputs. Always shown as suggestions for the human reviewer; never auto-approves or auto-returns anything. Text-based documents only (`text/plain`/`text/csv` — matches what's actually extractable today); Word/Excel/PDF show a plain "not available" note. Mocked to an honest placeholder, not a fake analysis, when unconfigured |
 | AI safeguards | PII redaction (`src/lib/ai/redact.ts`, unit-tested) applied to all free text before it reaches Claude — document content and user questions alike; every AI call (mocked or real) is logged via the existing append-only `AuditLog` (`src/lib/ai/audit.ts`); document AI output is always a suggestion, never a decision |
+| Audit log (Module E) | Real, append-only — document view/download/upload/approve/return/delete/restore, plus every AI interaction, each with a before/after JSON diff. Admin viewer at `/audit-log` (DSAC Admin only) with action/entity/date filters and a deleted-documents recovery panel |
+| Soft delete & retention (Module E) | Real — deleting a document sets `deletedAt` (DSAC Admin only) rather than removing the row; restorable from the audit log. Retention period is set per document type at upload time (`DOCUMENT_RETENTION_YEARS`) and shown on the document detail page; automated purge after the window isn't implemented (advisory/display-only — see `docs/SECURITY.md`) |
+| Input validation, rate limiting, CSRF, secure headers (Module E) | Real — `zod` schemas validate document upload/task/comment/review request bodies (`src/lib/validation/`); an in-memory per-user rate limiter (`src/lib/rate-limit.ts`, unit-tested) bounds login attempts and the cost-sensitive AI endpoints; an Origin-header check (`src/lib/origin-check.ts`) defends custom mutating API routes alongside `SameSite` cookies; `next.config.ts` sets CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy` and `Permissions-Policy` on every response — verified end-to-end (cross-origin POSTs correctly rejected, same-origin ones unaffected) |
+| PWA | Real — installable manifest with proper icons (`public/icons/`), and `@ducanh2912/next-pwa` generates a real service worker in production builds. **Disabled in dev on purpose**: this dev server already broke once on stale cached assets earlier in the project, and a service worker caching JS/CSS during active development would reproduce that. Verified via `pnpm build && pnpm start` — service worker registers, manifest/icons serve correctly, all security headers still present |
+| `docs/SECURITY.md` | Written — POPIA alignment (lawful processing, Information Officer, breach notification, data residency), NCPF alignment, and an honest "known gaps" list. Framed throughout as "designed to align with", not a compliance certification |
+| Tests | One Playwright e2e happy-path test (`e2e/happy-path.spec.ts`: demo login → portfolio dashboard → entity drill-down → tenant-scoped workspace tab) alongside the growing Vitest unit suite (37 tests: tenant isolation, role capability matrix, the logistic regression model, PII redaction, rate limiting) |
 
 Dev-mode note: this repo's `next.config.ts` caps the webpack build-worker pool (`experimental.cpus: 2`) and disables the dev filesystem cache. On memory-constrained machines, Next's default worker count (scales with CPU count) could exhaust RAM mid-compile on heavier pages and crash the dev server — this setting avoids that. If you're on a machine with plenty of headroom, it's safe to raise or remove.
 
@@ -130,7 +136,8 @@ pnpm build           # production build
 pnpm lint            # ESLint
 pnpm typecheck        # tsc --noEmit
 pnpm test            # Vitest
-pnpm test:e2e         # Playwright
+pnpm test:e2e         # Playwright — first run: npx playwright install chromium
+pnpm exec playwright test --ui  # Playwright, interactive
 pnpm docker:up / docker:down
 pnpm db:migrate        # prisma migrate dev
 pnpm db:seed          # re-seed synthetic data
@@ -150,5 +157,12 @@ throughout:
 - [x] **Phase 4** — early-warning engine, deadlines, countdowns, notifications (Module B).
 - [x] **Phase 5** — workspaces: tasks, real-time comments, Microsoft integration layer (Module D).
 - [x] **Phase 6** — AI features: briefings, document extraction, ask-the-data (Module A/B/C).
-- [ ] Phase 7 — security hardening, audit log viewer, `SECURITY.md`, tests, PWA polish (Module E).
+- [x] **Phase 7** — security hardening, audit log viewer, `SECURITY.md`, tests, PWA polish (Module E).
 - [ ] Phase 8 — demo script (`docs/DEMO.md`).
+
+## Further reading
+
+- [`docs/SECURITY.md`](docs/SECURITY.md) — security and privacy posture, POPIA/NCPF alignment, and an
+  honest list of what isn't done yet.
+- [`src/lib/microsoft/README.md`](src/lib/microsoft/README.md) — Microsoft Graph integration layer:
+  what's mocked, and the scopes a real implementation would need.

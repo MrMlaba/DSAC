@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/current-user";
-import { markNotificationRead } from "@/lib/data/notifications";
+import { softDeleteDocument } from "@/lib/data/documents";
 import { checkOrigin } from "@/lib/origin-check";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -9,6 +9,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   const user = await requireUser();
   const { id } = await params;
-  await markNotificationRead(user, id);
-  return NextResponse.json({ ok: true });
+
+  try {
+    await softDeleteDocument(user, id);
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Delete failed.";
+    return NextResponse.json({ error: message }, { status: message.startsWith("Forbidden") ? 403 : 400 });
+  }
 }

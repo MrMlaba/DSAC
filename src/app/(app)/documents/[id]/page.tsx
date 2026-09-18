@@ -4,11 +4,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { requireUser } from "@/lib/current-user";
 import { getDocumentDetail } from "@/lib/data/documents";
-import { canReviewDocuments, canUploadDocuments, DOCUMENT_TYPE_LABELS, isDsacWideRole } from "@/lib/constants";
+import { canDeleteDocuments, canReviewDocuments, canUploadDocuments, DOCUMENT_TYPE_LABELS, isDsacWideRole } from "@/lib/constants";
+import { getRequestIp } from "@/lib/request-ip";
 import { ReviewStatusBadge } from "@/components/review-status-badge";
 import { DocumentReviewActions } from "@/components/document-review-actions";
 import { DocumentVersionActions } from "@/components/document-version-actions";
 import { DocumentAiAssist } from "@/components/document-ai-assist";
+import { DeleteDocumentButton } from "@/components/delete-document-button";
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -22,7 +24,8 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
 
   let document;
   try {
-    document = await getDocumentDetail(user, id);
+    const ipAddress = await getRequestIp();
+    document = await getDocumentDetail(user, id, { ipAddress });
   } catch {
     notFound();
   }
@@ -122,9 +125,19 @@ export default async function DocumentDetailPage({ params }: { params: Promise<{
         </CardContent>
       </Card>
 
-      <Badge variant="outline" className="text-[10px]">
-        Checksum (SHA-256) of the latest version: {latest.checksum.slice(0, 16)}…
-      </Badge>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline" className="text-[10px]">
+            Checksum (SHA-256) of the latest version: {latest.checksum.slice(0, 16)}…
+          </Badge>
+          {document.retentionUntil && (
+            <Badge variant="outline" className="text-[10px]">
+              Retained until {new Date(document.retentionUntil).toLocaleDateString("en-ZA")}
+            </Badge>
+          )}
+        </div>
+        {canDeleteDocuments(user.role) && <DeleteDocumentButton documentId={document.id} />}
+      </div>
     </div>
   );
 }
