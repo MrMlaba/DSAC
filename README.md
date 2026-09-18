@@ -158,7 +158,9 @@ throughout:
 - [x] **Phase 5** — workspaces: tasks, real-time comments, Microsoft integration layer (Module D).
 - [x] **Phase 6** — AI features: briefings, document extraction, ask-the-data (Module A/B/C).
 - [x] **Phase 7** — security hardening, audit log viewer, `SECURITY.md`, tests, PWA polish (Module E).
-- [ ] Phase 8 — demo script (`docs/DEMO.md`).
+- [x] **Phase 8** — demo script (`docs/DEMO.md`).
+
+All 8 phases are complete.
 
 ## Further reading
 
