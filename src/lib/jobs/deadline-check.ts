@@ -1,96 +1,64 @@
 import { prisma } from "@/lib/prisma";
-import { getDeadlineAlertDays, getDeadlineHourlyWindowHours } from "@/lib/constants";
+import { now } from "@/lib/clock";
+import { getDeadlineAlertDays } from "@/lib/constants";
+import { daysUntilDue } from "@/lib/calc/compliance";
 import { notifyUser } from "@/lib/data/notifications";
 import type { NotificationChannel } from "@prisma/client";
 
+/** Reports that fell due longer ago than this are history, not something to nag anyone about. */
+const OVERDUE_LOOKBACK_DAYS = 90;
+
 /**
- * Checks every deadline against the configured thresholds (30d, 15d, then
- * daily, then hourly in the final window) and notifies anyone who still owes
- * a submission. Dedupes by exact notification title, which encodes the
- * threshold ("14 days until…", "overdue: …") — so re-running this job
- * frequently is safe: the same threshold for the same (user, deadline) never
- * re-fires, but a new day/hour crossing a new threshold does.
+ * Checks every report that is still owed (Draft or Returned) against the configured thresholds
+ * (30 and 15 days out, then daily in the final stretch) and notifies the entity. Once a report is
+ * overdue it is escalated to DSAC. Dedupes by exact notification title, which encodes the threshold
+ * ("10 day(s) until … is due", "Overdue: …"), so re-running this job frequently is safe.
  */
 export async function runDeadlineCheck(): Promise<number> {
-  const now = new Date();
+  const today = now();
   const alertDays = getDeadlineAlertDays();
-  const hourlyWindowHours = getDeadlineHourlyWindowHours();
-  const smallestDayThreshold = alertDays.length > 0 ? Math.min(...alertDays) : 15;
+  const smallestThreshold = alertDays.length > 0 ? Math.min(...alertDays) : 15;
+  const horizonDays = alertDays.length > 0 ? Math.max(...alertDays) : 30;
+  const DAY_MS = 86_400_000;
 
-  const deadlines = await prisma.deadline.findMany({ where: { reportingPeriodId: { not: null } } });
-  if (deadlines.length === 0) return 0;
-
-  const documents = await prisma.document.findMany({
-    where: { deletedAt: null, reportingPeriodId: { not: null } },
-    select: {
-      entityId: true,
-      reportingPeriodId: true,
-      versions: { orderBy: { versionNumber: "desc" }, take: 1, select: { reviewStatus: true } },
+  const reports = await prisma.report.findMany({
+    where: {
+      status: { in: ["DRAFT", "RETURNED"] },
+      dueDate: { gte: new Date(today.getTime() - OVERDUE_LOOKBACK_DAYS * DAY_MS), lte: new Date(today.getTime() + horizonDays * DAY_MS) },
     },
+    include: { entity: { select: { id: true, name: true } } },
   });
-  const satisfied = new Set<string>();
-  for (const d of documents) {
-    if (d.versions[0]?.reviewStatus && d.versions[0].reviewStatus !== "RETURNED") {
-      satisfied.add(`${d.entityId}|${d.reportingPeriodId}`);
-    }
-  }
+  if (reports.length === 0) return 0;
 
-  const entities = await prisma.entity.findMany({ select: { id: true, name: true } });
   const dsacUsers = await prisma.user.findMany({ where: { role: { in: ["DSAC_ADMIN", "DSAC_ANALYST"] } } });
+  const entityUsersByEntity = new Map<string, Awaited<ReturnType<typeof prisma.user.findMany>>>();
+  let sent = 0;
 
-  let notificationsSent = 0;
+  for (const report of reports) {
+    const days = daysUntilDue(report.dueDate, today);
+    const overdue = days < 0;
+    const isThreshold = alertDays.includes(days) || days < smallestThreshold;
+    if (!overdue && !isThreshold) continue;
 
-  for (const deadline of deadlines) {
-    const hoursUntilDue = (deadline.dueDate.getTime() - now.getTime()) / (1000 * 60 * 60);
-    const daysUntilDue = hoursUntilDue / 24;
+    const title = overdue ? `Overdue: ${report.title} — ${report.entity.name}` : `${days === 0 ? "Due today" : `${days} day(s) until`}: ${report.title}${days === 0 ? "" : " is due"} — ${report.entity.name}`;
+    const body = overdue
+      ? `${report.entity.name} has not submitted "${report.title}" (due ${report.dueDate.toLocaleDateString("en-ZA")}, ${-days} day(s) ago).`
+      : `${report.entity.name} has not yet submitted "${report.title}" (due ${report.dueDate.toLocaleDateString("en-ZA")}).`;
 
-    let thresholdLabel: string | null = null;
-    if (hoursUntilDue <= 0) {
-      thresholdLabel = "overdue";
-    } else if (hoursUntilDue <= hourlyWindowHours) {
-      thresholdLabel = `${Math.max(1, Math.ceil(hoursUntilDue))}h`;
-    } else if (daysUntilDue < smallestDayThreshold || alertDays.some((d) => Math.ceil(daysUntilDue) === d)) {
-      thresholdLabel = `${Math.ceil(daysUntilDue)}d`;
+    if (!entityUsersByEntity.has(report.entityId)) {
+      entityUsersByEntity.set(report.entityId, await prisma.user.findMany({ where: { entityId: report.entityId, role: { in: ["ENTITY_ADMIN", "ENTITY_CONTRIBUTOR"] } } }));
     }
-    if (!thresholdLabel) continue;
+    const entityUsers = entityUsersByEntity.get(report.entityId) ?? [];
+    const channels: NotificationChannel[] = overdue ? ["IN_APP", "EMAIL", "TEAMS"] : ["IN_APP", "EMAIL"];
+    const recipients = [...entityUsers.map((u) => ({ user: u, link: "/reports" })), ...(overdue ? dsacUsers.map((u) => ({ user: u, link: `/entities/${report.entityId}/reports` })) : [])];
 
-    const outstandingEntities = entities.filter((e) => !satisfied.has(`${e.id}|${deadline.reportingPeriodId}`));
-    if (outstandingEntities.length === 0) continue;
-
-    for (const entity of outstandingEntities) {
-      const entityUsers = await prisma.user.findMany({
-        where: { entityId: entity.id, role: { in: ["ENTITY_ADMIN", "ENTITY_CONTRIBUTOR"] } },
-      });
-
-      const title =
-        thresholdLabel === "overdue"
-          ? `Overdue: ${deadline.title} — ${entity.name}`
-          : `${thresholdLabel.endsWith("h") ? thresholdLabel.replace("h", " hour(s)") : thresholdLabel.replace("d", " day(s)")} until ${deadline.title} is due — ${entity.name}`;
-      const body = `${entity.name} has not yet submitted for "${deadline.title}" (due ${deadline.dueDate.toLocaleDateString("en-ZA")}).`;
-      const isOverdue = thresholdLabel === "overdue";
-      const recipients = isOverdue ? [...entityUsers, ...dsacUsers] : entityUsers; // escalate overdue to DSAC
-      const channels: NotificationChannel[] = isOverdue ? ["IN_APP", "EMAIL", "TEAMS"] : ["IN_APP", "EMAIL"];
-
-      for (const recipient of recipients) {
-        const alreadySent = await prisma.notification.findFirst({
-          where: { userId: recipient.id, type: "DEADLINE_REMINDER", title, channel: "IN_APP" },
-        });
-        if (alreadySent) continue;
-
-        await notifyUser({
-          userId: recipient.id,
-          userEmail: recipient.email,
-          entityId: entity.id,
-          type: "DEADLINE_REMINDER",
-          title,
-          body,
-          link: "/risk",
-          channels,
-        });
-        notificationsSent++;
-      }
+    for (const { user, link } of recipients) {
+      const alreadySent = await prisma.notification.findFirst({ where: { userId: user.id, type: "DEADLINE_REMINDER", title, channel: "IN_APP" } });
+      if (alreadySent) continue;
+      await notifyUser({ userId: user.id, userEmail: user.email, entityId: report.entityId, type: "DEADLINE_REMINDER", title, body, link, channels });
+      sent++;
     }
   }
 
-  return notificationsSent;
+  return sent;
 }

@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
-const EXAMPLES = ["Which entities are at critical risk?", "What deadlines are coming up?", "What's our average fund utilisation?"];
+const EXAMPLES = ["Which entities are at critical risk?", "Which reports are overdue?", "What is our overall utilisation?"];
 
 export function AskTheData() {
   const [question, setQuestion] = useState("");

@@ -43,3 +43,21 @@ describe("role capability matrix", () => {
     expect(canReviewDocuments("ENTITY_CONTRIBUTOR")).toBe(false);
   });
 });
+
+describe("reporting capabilities", () => {
+  it("only entity staff capture reporting data and submit reports — DSAC never enters an entity's figures", async () => {
+    const { canCaptureReportingData } = await import("./constants");
+    expect(ALL_ROLES.filter(canCaptureReportingData).sort()).toEqual(["ENTITY_ADMIN", "ENTITY_CONTRIBUTOR"]);
+  });
+
+  it("only DSAC Admin and Analyst review reports and decide requests; the Executive Viewer never acts", async () => {
+    const { canReviewReports } = await import("./constants");
+    expect(ALL_ROLES.filter(canReviewReports).sort()).toEqual(["DSAC_ADMIN", "DSAC_ANALYST"]);
+  });
+
+  it("only DSAC Admin gives the final sign-off and reaches Administration", async () => {
+    const { canFinaliseReports, canAdminister } = await import("./constants");
+    expect(ALL_ROLES.filter(canFinaliseReports)).toEqual(["DSAC_ADMIN"]);
+    expect(ALL_ROLES.filter(canAdminister)).toEqual(["DSAC_ADMIN"]);
+  });
+});

@@ -156,6 +156,10 @@ export async function createDocumentVersion(
     financialYearId: string;
     quarter?: Quarter;
     changeNote?: string;
+    /** Evidence links — what this document supports. Each must belong to the same entity. */
+    reportId?: string;
+    kpiId?: string;
+    budgetLineId?: string;
     file: Buffer;
     filename: string;
     mimeType: string;
@@ -176,12 +180,33 @@ export async function createDocumentVersion(
     throw new Error("File is empty.");
   }
 
-  const reportingPeriodId = await resolveReportingPeriodId(params.financialYearId, params.type, params.quarter);
+  const isEvidence = Boolean(params.reportId || params.kpiId || params.budgetLineId);
 
+  // Evidence links must point at this entity's own records — never another organisation's.
+  const linkedReport = params.reportId ? await prisma.report.findFirst({ where: { id: params.reportId, entityId: params.entityId }, select: { id: true, reportingPeriodId: true } }) : null;
+  if (params.reportId && !linkedReport) throw new Error("That report does not belong to this entity.");
+  if (params.kpiId && !(await prisma.kpi.findFirst({ where: { id: params.kpiId, entityId: params.entityId }, select: { id: true } }))) throw new Error("That KPI does not belong to this entity.");
+  if (params.budgetLineId && !(await prisma.budgetLine.findFirst({ where: { id: params.budgetLineId, entityId: params.entityId }, select: { id: true } }))) throw new Error("That budget line does not belong to this entity.");
+
+  const reportingPeriodId = linkedReport?.reportingPeriodId ?? (await resolveReportingPeriodId(params.financialYearId, params.type, params.quarter));
+
+  // An ordinary upload to the same type/period becomes a new version. Evidence is different — an entity
+  // may attach several distinct files to one report — so it only versions a document with the same title and link.
   let document = params.documentId
     ? await prisma.document.findUniqueOrThrow({ where: { id: params.documentId } })
     : await prisma.document.findFirst({
-        where: { entityId: params.entityId, type: params.type, reportingPeriodId },
+        where: isEvidence
+          ? {
+              entityId: params.entityId,
+              type: params.type,
+              reportingPeriodId,
+              title: { equals: params.title, mode: "insensitive" },
+              reportId: params.reportId ?? null,
+              kpiId: params.kpiId ?? null,
+              budgetLineId: params.budgetLineId ?? null,
+              deletedAt: null,
+            }
+          : { entityId: params.entityId, type: params.type, reportingPeriodId },
       });
 
   if (document) {
@@ -193,6 +218,9 @@ export async function createDocumentVersion(
         type: params.type,
         title: params.title,
         reportingPeriodId,
+        reportId: params.reportId,
+        kpiId: params.kpiId,
+        budgetLineId: params.budgetLineId,
         retentionUntil: computeRetentionUntil(params.type),
       },
     });

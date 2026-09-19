@@ -19,7 +19,9 @@
     "db:reset": "prisma migrate reset --force",
     "db:studio": "prisma studio",
     "setup": "docker compose up -d && prisma migrate deploy && tsx prisma/seed.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "verify:data": "tsx scripts/verify-data.ts",
+    "verify:flows": "tsx scripts/verify-flows.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -1,6 +1,9 @@
+import type { ExpenseCategory, ReportStatus, RequestCategory, RequestStatus } from "@prisma/client";
+import type { ComplianceState, EntityComplianceStatus } from "@/lib/calc/compliance";
+import type { KpiStatus, PerformanceBand } from "@/lib/calc/performance";
 import type { Role, Sector, EntityType, Gender, RaceCategory, AgeBand, DisabilityStatus, AuditOpinion, JobType, Quarter, DocumentType, TaskDirection, TaskStatus } from "@prisma/client";
 
-export const APP_NAME = "DSAC Performance & Reporting Platform";
+export const APP_NAME = "DSAC Reporting & Oversight";
 export const DEMO_BANNER = "Demo – synthetic data";
 
 export const ROLE_LABELS: Record<Role, string> = {
@@ -166,12 +169,6 @@ export function getDeadlineAlertDays(): number[] {
     .sort((a, b) => b - a);
 }
 
-export function getDeadlineHourlyWindowHours(): number {
-  const raw = process.env.DEADLINE_ALERT_HOURLY_WITHIN_HOURS ?? "24";
-  const parsed = parseInt(raw, 10);
-  return Number.isNaN(parsed) ? 24 : parsed;
-}
-
 export const TASK_DIRECTION_LABELS: Record<TaskDirection, string> = {
   INTERNAL: "Within entity",
   TO_DSAC: "To DSAC",
@@ -193,7 +190,7 @@ export function taskDirectionsForRole(role: Role): TaskDirection[] {
   return ["INTERNAL", "TO_DSAC"];
 }
 
-/** Only DSAC Admin sees the audit log — matches the existing /audit-log nav gating from Phase 1. */
+/** Only DSAC Admin sees the audit log (under Administration). */
 export const AUDIT_LOG_ROLES: Role[] = ["DSAC_ADMIN"];
 
 export function canViewAuditLog(role: Role): boolean {
@@ -220,4 +217,97 @@ export function computeRetentionUntil(type: DocumentType, from: Date = new Date(
   const result = new Date(from);
   result.setFullYear(result.getFullYear() + DOCUMENT_RETENTION_YEARS[type]);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Finance, performance, compliance, reports and requests
+// ---------------------------------------------------------------------------
+
+export const EXPENSE_CATEGORY_LABELS: Record<ExpenseCategory, string> = {
+  EMPLOYEE_COSTS: "Employee Costs",
+  PROGRAMME_COSTS: "Programme Costs",
+  TRAVEL: "Travel",
+  ADMINISTRATION: "Administration",
+  PROFESSIONAL_FEES: "Professional Fees",
+  CAPITAL_EXPENDITURE: "Capital Expenditure",
+  OTHER: "Other Approved Categories",
+};
+
+export const KPI_STATUS_LABELS: Record<KpiStatus, string> = {
+  ACHIEVED: "Achieved",
+  ON_TRACK: "On Track",
+  AT_RISK: "At Risk",
+  NOT_ACHIEVED: "Not Achieved",
+};
+
+export const PERFORMANCE_BAND_LABELS: Record<PerformanceBand, string> = {
+  ON_TRACK: "On Track",
+  AT_RISK: "At Risk",
+  UNDER_TARGET: "Under Target",
+  NO_DATA: "No data yet",
+};
+
+export const COMPLIANCE_STATE_LABELS: Record<ComplianceState, string> = {
+  COMPLIANT: "Compliant",
+  LATE_SUBMISSION: "Submitted late",
+  RETURNED: "Returned for correction",
+  DUE_SOON: "Due soon",
+  UPCOMING: "Upcoming",
+  OVERDUE: "Overdue",
+};
+
+export const ENTITY_COMPLIANCE_LABELS: Record<EntityComplianceStatus, string> = {
+  COMPLIANT: "Compliant",
+  ATTENTION_REQUIRED: "Attention Required",
+  OVERDUE_REPORTING: "Overdue Reporting",
+};
+
+export const REPORT_STATUS_LABELS: Record<ReportStatus, string> = {
+  DRAFT: "Draft",
+  SUBMITTED: "Submitted",
+  UNDER_REVIEW: "Under review",
+  ACCEPTED: "Accepted",
+  RETURNED: "Returned for correction",
+  FINALISED: "Finalised",
+};
+
+export const REQUEST_CATEGORY_LABELS: Record<RequestCategory, string> = {
+  BUDGET_REQUEST: "Budget request",
+  ADDITIONAL_FUNDING: "Additional funding",
+  TECHNICAL_SUPPORT: "Technical support",
+  GOVERNANCE_ASSISTANCE: "Governance assistance",
+  PROGRAMME_SUPPORT: "Programme support",
+  CAPACITY_BUILDING: "Capacity-building support",
+};
+
+/** Categories where an amount is expected. */
+export const FUNDING_REQUEST_CATEGORIES: RequestCategory[] = ["BUDGET_REQUEST", "ADDITIONAL_FUNDING"];
+
+export const REQUEST_STATUS_LABELS: Record<RequestStatus, string> = {
+  SUBMITTED: "Submitted",
+  UNDER_REVIEW: "Under review",
+  APPROVED: "Approved",
+  DECLINED: "Declined",
+  MORE_INFO_REQUIRED: "More information required",
+  COMPLETED: "Completed",
+};
+
+/** Entity staff who capture performance and expenditure and submit reports and requests. */
+export function canCaptureReportingData(role: Role): boolean {
+  return role === "ENTITY_ADMIN" || role === "ENTITY_CONTRIBUTOR";
+}
+
+/** DSAC staff who review submitted reports and decide requests. */
+export function canReviewReports(role: Role): boolean {
+  return role === "DSAC_ADMIN" || role === "DSAC_ANALYST";
+}
+
+/** Only DSAC Admin gives the final sign-off that finalises an accepted report. */
+export function canFinaliseReports(role: Role): boolean {
+  return role === "DSAC_ADMIN";
+}
+
+/** Administration (standards, audit log) is DSAC Admin only. */
+export function canAdminister(role: Role): boolean {
+  return role === "DSAC_ADMIN";
 }

@@ -1,5 +1,10 @@
-// DSAC Public Entities Performance & Reporting Platform
+// DSAC Public Entity & NPO Reporting and Oversight Platform
 // Prototype schema — GovTech Hackathon 2026. Synthetic data only.
+//
+// Design rule: one source of truth. Approved budget = the sum of an entity's BudgetLines;
+// actual expenditure = the sum of QuarterlyExpenditure rows; performance = KpiMilestone targets
+// vs PerformanceReport actuals; compliance = Report due dates vs submissions. Every dashboard,
+// tab and portfolio roll-up is derived from these rows (see src/lib/calc and src/lib/data/metrics.ts).
 
 generator client {
   provider = "prisma-client-js"
@@ -46,11 +51,57 @@ enum Quarter {
   ANNUAL
 }
 
-enum KpiStatus {
-  NOT_STARTED
-  IN_PROGRESS
-  ACHIEVED
-  DEADLINE_MISSED
+/// Standard expense lines every entity budgets against.
+enum ExpenseCategory {
+  EMPLOYEE_COSTS
+  PROGRAMME_COSTS
+  TRAVEL
+  ADMINISTRATION
+  PROFESSIONAL_FEES
+  CAPITAL_EXPENDITURE
+  OTHER
+}
+
+/// SUM: counts that accumulate through the year. LATEST: rates/scores where YTD is the latest value.
+enum KpiAggregation {
+  SUM
+  LATEST
+}
+
+enum ReportKind {
+  QUARTERLY_PERFORMANCE
+  QUARTERLY_FINANCIAL
+  GOVERNANCE_RETURN
+  ANNUAL_REPORT
+}
+
+/// Draft → Submitted → Under Review → Accepted / Returned for Correction → Finalised
+enum ReportStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  ACCEPTED
+  RETURNED
+  FINALISED
+}
+
+enum RequestCategory {
+  BUDGET_REQUEST
+  ADDITIONAL_FUNDING
+  TECHNICAL_SUPPORT
+  GOVERNANCE_ASSISTANCE
+  PROGRAMME_SUPPORT
+  CAPACITY_BUILDING
+}
+
+/// Submitted → Under Review → Approved / Declined / More Information Required → Completed
+enum RequestStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  DECLINED
+  MORE_INFO_REQUIRED
+  COMPLETED
 }
 
 enum DocumentType {
@@ -99,6 +150,8 @@ enum NotificationType {
   RISK_ALERT
   COMMENT_MENTION
   WEEKLY_BRIEFING
+  REPORT_SUBMITTED
+  REQUEST_UPDATE
 }
 
 enum RiskBand {
@@ -162,16 +215,6 @@ enum JobType {
   YOUTH
 }
 
-enum DeadlineCategory {
-  QUARTERLY_REPORT
-  ANNUAL_REPORT
-  FINANCIALS
-  STRATEGIC_PLAN
-  APP_SUBMISSION
-  AUDIT_RESPONSE
-  OTHER
-}
-
 enum PiiClassification {
   NONE
   AGGREGATED
@@ -184,29 +227,41 @@ enum PiiClassification {
 // ---------------------------------------------------------------------------
 
 model Entity {
-  id                String     @id @default(cuid())
-  name              String
-  type              EntityType
-  sector            Sector
-  description       String?
-  logoUrl           String?
-  fundingAllocation Decimal    @db.Decimal(14, 2)
-  createdAt         DateTime   @default(now())
-  updatedAt         DateTime   @updatedAt
+  id                  String     @id @default(cuid())
+  name                String
+  type                EntityType
+  sector              Sector
+  description         String?
+  logoUrl             String?
+  // Organisational profile (synthetic)
+  registrationNumber  String?
+  establishedYear     Int?
+  province            String?
+  physicalAddress     String?
+  contactPerson       String?
+  contactEmail        String?
+  contactPhone        String?
+  website             String?
+  accountingAuthority String?
+  mandate             String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
 
-  users             User[]
-  kpis              Kpi[]
-  documents         Document[]
-  tasks             Task[]
-  fundAllocations   FundAllocation[]
-  auditFindings     AuditFinding[]
-  workforceStats    WorkforceStat[]
-  jobCreations      JobCreation[]
-  comments          Comment[]
-  deadlines         Deadline[]
-  riskScores        RiskScore[]
-  notifications     Notification[]
-  auditLogs         AuditLog[]
+  users          User[]
+  kpis           Kpi[]
+  documents      Document[]
+  tasks          Task[]
+  budgetLines    BudgetLine[]
+  disbursements  Disbursement[]
+  reports        Report[]
+  requests       SupportRequest[]
+  auditFindings  AuditFinding[]
+  workforceStats WorkforceStat[]
+  jobCreations   JobCreation[]
+  comments       Comment[]
+  riskScores     RiskScore[]
+  notifications  Notification[]
+  auditLogs      AuditLog[]
 
   @@index([type])
   @@index([sector])
@@ -221,7 +276,10 @@ model FinancialYear {
 
   reportingPeriods ReportingPeriod[]
   kpis             Kpi[]
-  fundAllocations  FundAllocation[]
+  budgetLines      BudgetLine[]
+  disbursements    Disbursement[]
+  reports          Report[]
+  requests         SupportRequest[]
   auditFindings    AuditFinding[]
   workforceStats   WorkforceStat[]
   jobCreations     JobCreation[]
@@ -238,7 +296,7 @@ model ReportingPeriod {
 
   kpiMilestones      KpiMilestone[]
   performanceReports PerformanceReport[]
-  deadlines          Deadline[]
+  reports            Report[]
   documents          Document[]
 
   @@unique([financialYearId, quarter])
@@ -249,58 +307,64 @@ model ReportingPeriod {
 // ---------------------------------------------------------------------------
 
 model User {
-  id             String    @id @default(cuid())
+  id             String   @id @default(cuid())
   name           String
-  email          String    @unique
+  email          String   @unique
   hashedPassword String?
   image          String?
   role           Role
   entityId       String?
-  entity         Entity?   @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  isDemoUser     Boolean   @default(true)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  entity         Entity?  @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  isDemoUser     Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  documentVersions   DocumentVersion[] @relation("DocumentVersionAuthor")
-  reviewedVersions   DocumentVersion[] @relation("DocumentVersionReviewer")
+  documentVersions   DocumentVersion[]   @relation("DocumentVersionAuthor")
+  reviewedVersions   DocumentVersion[]   @relation("DocumentVersionReviewer")
   comments           Comment[]
-  tasksAssigned      Task[]            @relation("TaskAssignee")
-  tasksCreated       Task[]            @relation("TaskAssigner")
+  tasksAssigned      Task[]              @relation("TaskAssignee")
+  tasksCreated       Task[]              @relation("TaskAssigner")
   notifications      Notification[]
   performanceReports PerformanceReport[]
+  reportsSubmitted   Report[]            @relation("ReportSubmitter")
+  reportsReviewed    Report[]            @relation("ReportReviewer")
+  requestsCreated    SupportRequest[]    @relation("RequestCreator")
+  requestsDecided    SupportRequest[]    @relation("RequestDecider")
   auditLogs          AuditLog[]
 
   @@index([entityId])
 }
 
 // ---------------------------------------------------------------------------
-// KPIs & performance
+// Performance: standard KPI structure (Programme → Objective → KPI)
 // ---------------------------------------------------------------------------
 
 model Kpi {
-  id              String        @id @default(cuid())
+  id              String         @id @default(cuid())
   entityId        String
-  entity          Entity        @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  entity          Entity         @relation(fields: [entityId], references: [id], onDelete: Cascade)
   financialYearId String
-  financialYear   FinancialYear @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+  financialYear   FinancialYear  @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+  programme       String
+  objective       String
   name            String
   description     String?
-  category        String?
-  baseline        Decimal       @db.Decimal(14, 2)
-  annualTarget    Decimal       @db.Decimal(14, 2)
   unit            String
-  status          KpiStatus     @default(NOT_STARTED)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  aggregation     KpiAggregation @default(SUM)
+  annualTarget    Decimal        @db.Decimal(14, 2)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
 
-  milestones          KpiMilestone[]
-  performanceReports  PerformanceReport[]
-  comments            Comment[]
-  riskScores          RiskScore[]
+  milestones         KpiMilestone[]
+  performanceReports PerformanceReport[]
+  comments           Comment[]
+  riskScores         RiskScore[]
+  documents          Document[]
 
   @@index([entityId, financialYearId])
 }
 
+/// The target for one reporting period alone (not cumulative).
 model KpiMilestone {
   id                String          @id @default(cuid())
   kpiId             String
@@ -312,6 +376,7 @@ model KpiMilestone {
   @@unique([kpiId, reportingPeriodId])
 }
 
+/// What the entity achieved in one reporting period alone. YTD is derived, never stored.
 model PerformanceReport {
   id                  String          @id @default(cuid())
   kpiId               String
@@ -319,45 +384,128 @@ model PerformanceReport {
   reportingPeriodId   String
   reportingPeriod     ReportingPeriod @relation(fields: [reportingPeriodId], references: [id], onDelete: Cascade)
   actualValue         Decimal         @db.Decimal(14, 2)
-  status              KpiStatus
-  evidenceUrl         String?
   varianceExplanation String?
+  correctiveAction    String?
   submittedById       String?
   submittedBy         User?           @relation(fields: [submittedById], references: [id])
   submittedAt         DateTime        @default(now())
-  isLate              Boolean         @default(false)
 
   @@unique([kpiId, reportingPeriodId])
 }
 
 // ---------------------------------------------------------------------------
-// Finance
+// Finance: approved budget → disbursed → actual expenditure
 // ---------------------------------------------------------------------------
 
-model FundAllocation {
+/// The approved annual budget for one expense line. Entity approved budget = sum of its lines.
+model BudgetLine {
+  id              String          @id @default(cuid())
+  entityId        String
+  entity          Entity          @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  financialYearId String
+  financialYear   FinancialYear   @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+  category        ExpenseCategory
+  annualBudget    Decimal         @db.Decimal(14, 2)
+
+  expenditures QuarterlyExpenditure[]
+  documents    Document[]
+
+  @@unique([entityId, financialYearId, category])
+  @@index([financialYearId])
+}
+
+/// Expenditure for ONE quarter against a budget line. Cumulative actual = sum of the quarters.
+model QuarterlyExpenditure {
+  id           String     @id @default(cuid())
+  budgetLineId String
+  budgetLine   BudgetLine @relation(fields: [budgetLineId], references: [id], onDelete: Cascade)
+  quarter      Quarter
+  amount       Decimal    @db.Decimal(14, 2)
+  note         String?
+  recordedAt   DateTime   @default(now())
+
+  @@unique([budgetLineId, quarter])
+}
+
+/// A tranche DSAC has actually released to the entity.
+model Disbursement {
   id              String        @id @default(cuid())
   entityId        String
   entity          Entity        @relation(fields: [entityId], references: [id], onDelete: Cascade)
   financialYearId String
   financialYear   FinancialYear @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
-  category        String
   trancheNumber   Int
-  amountAllocated Decimal       @db.Decimal(14, 2)
-  dateAllocated   DateTime
+  amount          Decimal       @db.Decimal(14, 2)
+  disbursedAt     DateTime
 
-  expenditures Expenditure[]
-
-  @@index([entityId, financialYearId])
+  @@unique([entityId, financialYearId, trancheNumber])
+  @@index([financialYearId])
 }
 
-model Expenditure {
-  id               String         @id @default(cuid())
-  fundAllocationId String
-  fundAllocation   FundAllocation @relation(fields: [fundAllocationId], references: [id], onDelete: Cascade)
-  amountSpent      Decimal        @db.Decimal(14, 2)
-  category         String
-  description      String?
-  recordedAt       DateTime       @default(now())
+// ---------------------------------------------------------------------------
+// Reports & compliance: one row per required submission
+// ---------------------------------------------------------------------------
+
+model Report {
+  id                String          @id @default(cuid())
+  entityId          String
+  entity            Entity          @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  financialYearId   String
+  financialYear     FinancialYear   @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+  reportingPeriodId String
+  reportingPeriod   ReportingPeriod @relation(fields: [reportingPeriodId], references: [id], onDelete: Cascade)
+  kind              ReportKind
+  title             String
+  dueDate           DateTime
+  status            ReportStatus    @default(DRAFT)
+  submittedAt       DateTime?
+  submittedById     String?
+  submittedBy       User?           @relation("ReportSubmitter", fields: [submittedById], references: [id])
+  reviewedAt        DateTime?
+  reviewedById      String?
+  reviewedBy        User?           @relation("ReportReviewer", fields: [reviewedById], references: [id])
+  reviewComment     String?
+  finalisedAt       DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  documents Document[]
+
+  @@unique([entityId, reportingPeriodId, kind])
+  @@index([entityId, financialYearId])
+  @@index([status, dueDate])
+}
+
+// ---------------------------------------------------------------------------
+// Budget / support requests
+// ---------------------------------------------------------------------------
+
+model SupportRequest {
+  id               String          @id @default(cuid())
+  entityId         String
+  entity           Entity          @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  financialYearId  String?
+  financialYear    FinancialYear?  @relation(fields: [financialYearId], references: [id])
+  title            String
+  category         RequestCategory
+  amountRequested  Decimal?        @db.Decimal(14, 2)
+  motivation       String
+  linkedProgramme  String?
+  expectedOutcome  String
+  status           RequestStatus   @default(SUBMITTED)
+  decisionNote     String?
+  createdById      String
+  createdBy        User            @relation("RequestCreator", fields: [createdById], references: [id])
+  decidedById      String?
+  decidedBy        User?           @relation("RequestDecider", fields: [decidedById], references: [id])
+  decidedAt        DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  documents Document[]
+
+  @@index([entityId, status])
+  @@index([status])
 }
 
 // ---------------------------------------------------------------------------
@@ -365,18 +513,18 @@ model Expenditure {
 // ---------------------------------------------------------------------------
 
 model AuditFinding {
-  id              String              @id @default(cuid())
+  id              String             @id @default(cuid())
   entityId        String
-  entity          Entity              @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  entity          Entity             @relation(fields: [entityId], references: [id], onDelete: Cascade)
   financialYearId String
-  financialYear   FinancialYear       @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+  financialYear   FinancialYear      @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
   category        String
   severity        AuditSeverity
-  status          AuditFindingStatus  @default(OPEN)
+  status          AuditFindingStatus @default(OPEN)
   auditorOpinion  AuditOpinion
   description     String
   resolvedAt      DateTime?
-  createdAt       DateTime            @default(now())
+  createdAt       DateTime           @default(now())
 
   @@index([entityId, financialYearId])
 }
@@ -386,17 +534,17 @@ model AuditFinding {
 // ---------------------------------------------------------------------------
 
 model WorkforceStat {
-  id                 String            @id @default(cuid())
-  entityId           String
-  entity             Entity            @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  financialYearId    String
-  financialYear      FinancialYear     @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
-  gender             Gender
-  raceCategory       RaceCategory
-  ageBand            AgeBand
-  disabilityStatus   DisabilityStatus
-  headcount          Int
-  piiClassification  PiiClassification @default(AGGREGATED)
+  id                String            @id @default(cuid())
+  entityId          String
+  entity            Entity            @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  financialYearId   String
+  financialYear     FinancialYear     @relation(fields: [financialYearId], references: [id], onDelete: Cascade)
+  gender            Gender
+  raceCategory      RaceCategory
+  ageBand           AgeBand
+  disabilityStatus  DisabilityStatus
+  headcount         Int
+  piiClassification PiiClassification @default(AGGREGATED)
 
   @@unique([entityId, financialYearId, gender, raceCategory, ageBand, disabilityStatus])
 }
@@ -414,47 +562,59 @@ model JobCreation {
 }
 
 // ---------------------------------------------------------------------------
-// Documents
+// Supporting documents (evidence) — linked to the KPI / budget line / report / request they support
 // ---------------------------------------------------------------------------
 
 model Document {
-  id                String          @id @default(cuid())
+  id                String           @id @default(cuid())
   entityId          String
-  entity            Entity          @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  entity            Entity           @relation(fields: [entityId], references: [id], onDelete: Cascade)
   reportingPeriodId String?
   reportingPeriod   ReportingPeriod? @relation(fields: [reportingPeriodId], references: [id])
+  kpiId             String?
+  kpi               Kpi?             @relation(fields: [kpiId], references: [id], onDelete: SetNull)
+  budgetLineId      String?
+  budgetLine        BudgetLine?      @relation(fields: [budgetLineId], references: [id], onDelete: SetNull)
+  reportId          String?
+  report            Report?          @relation(fields: [reportId], references: [id], onDelete: SetNull)
+  requestId         String?
+  request           SupportRequest?  @relation(fields: [requestId], references: [id], onDelete: SetNull)
   type              DocumentType
   title             String
   retentionUntil    DateTime?
   deletedAt         DateTime?
-  createdAt         DateTime        @default(now())
+  createdAt         DateTime         @default(now())
 
   versions DocumentVersion[]
   comments Comment[]
 
   @@index([entityId, type])
+  @@index([kpiId])
+  @@index([budgetLineId])
+  @@index([reportId])
+  @@index([requestId])
 }
 
 model DocumentVersion {
-  id             String       @id @default(cuid())
-  documentId     String
-  document       Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  versionNumber  Int
-  storageKey     String
-  checksum       String
-  fileSize       Int
-  mimeType       String
-  authorId       String
-  author         User         @relation("DocumentVersionAuthor", fields: [authorId], references: [id])
-  changeNote     String?
-  reviewStatus   ReviewStatus @default(SUBMITTED)
-  reviewedById   String?
-  reviewedBy     User?        @relation("DocumentVersionReviewer", fields: [reviewedById], references: [id])
-  reviewedAt     DateTime?
-  reviewComment  String?
-  aiSummary      String?
-  aiFlags        Json?
-  createdAt      DateTime     @default(now())
+  id            String       @id @default(cuid())
+  documentId    String
+  document      Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  versionNumber Int
+  storageKey    String
+  checksum      String
+  fileSize      Int
+  mimeType      String
+  authorId      String
+  author        User         @relation("DocumentVersionAuthor", fields: [authorId], references: [id])
+  changeNote    String?
+  reviewStatus  ReviewStatus @default(SUBMITTED)
+  reviewedById  String?
+  reviewedBy    User?        @relation("DocumentVersionReviewer", fields: [reviewedById], references: [id])
+  reviewedAt    DateTime?
+  reviewComment String?
+  aiSummary     String?
+  aiFlags       Json?
+  createdAt     DateTime     @default(now())
 
   comments Comment[]
 
@@ -462,7 +622,7 @@ model DocumentVersion {
 }
 
 // ---------------------------------------------------------------------------
-// Collaboration
+// Collaboration (parked — not surfaced in the spec's navigation)
 // ---------------------------------------------------------------------------
 
 model Comment {
@@ -493,20 +653,20 @@ model Comment {
 }
 
 model Task {
-  id           String        @id @default(cuid())
-  entityId     String
-  entity       Entity        @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  title        String
-  description  String?
-  assigneeId   String
-  assignee     User          @relation("TaskAssignee", fields: [assigneeId], references: [id])
-  assignerId   String
-  assigner     User          @relation("TaskAssigner", fields: [assignerId], references: [id])
-  direction    TaskDirection
-  status       TaskStatus    @default(TODO)
-  dueDate      DateTime?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id          String        @id @default(cuid())
+  entityId    String
+  entity      Entity        @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  assigneeId  String
+  assignee    User          @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  assignerId  String
+  assigner    User          @relation("TaskAssigner", fields: [assignerId], references: [id])
+  direction   TaskDirection
+  status      TaskStatus    @default(TODO)
+  dueDate     DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
   comments Comment[]
 
@@ -514,24 +674,8 @@ model Task {
 }
 
 // ---------------------------------------------------------------------------
-// Deadlines, notifications, risk
+// Notifications & risk
 // ---------------------------------------------------------------------------
-
-model Deadline {
-  id                String            @id @default(cuid())
-  entityId          String?
-  entity            Entity?           @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  reportingPeriodId String?
-  reportingPeriod   ReportingPeriod?  @relation(fields: [reportingPeriodId], references: [id])
-  title             String
-  description       String?
-  category          DeadlineCategory
-  dueDate           DateTime
-  createdAt         DateTime          @default(now())
-
-  @@index([dueDate])
-  @@index([entityId])
-}
 
 model Notification {
   id        String              @id @default(cuid())
@@ -551,15 +695,15 @@ model Notification {
 }
 
 model RiskScore {
-  id          String   @id @default(cuid())
-  entityId    String
-  entity      Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  kpiId       String?
-  kpi         Kpi?     @relation(fields: [kpiId], references: [id], onDelete: Cascade)
-  score       Int
-  band        RiskBand
-  factors     Json
-  computedAt  DateTime @default(now())
+  id         String   @id @default(cuid())
+  entityId   String
+  entity     Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  kpiId      String?
+  kpi        Kpi?     @relation(fields: [kpiId], references: [id], onDelete: Cascade)
+  score      Int
+  band       RiskBand
+  factors    Json
+  computedAt DateTime @default(now())
 
   @@index([entityId, computedAt])
 }
@@ -569,18 +713,18 @@ model RiskScore {
 // ---------------------------------------------------------------------------
 
 model AuditLog {
-  id        String   @id @default(cuid())
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id])
-  entityId  String?
-  entity    Entity?  @relation(fields: [entityId], references: [id])
-  action    String
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  entityId   String?
+  entity     Entity?  @relation(fields: [entityId], references: [id])
+  action     String
   targetType String
-  targetId  String?
-  ipAddress String?
-  before    Json?
-  after     Json?
-  createdAt DateTime @default(now())
+  targetId   String?
+  ipAddress  String?
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now())
 
   @@index([targetType, targetId])
   @@index([userId])

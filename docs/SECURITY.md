@@ -26,18 +26,27 @@ review, a penetration test, and sign-off from DSAC's Information Officer before 
 - **Role-based access control**: five roles (DSAC Admin, DSAC Analyst, Entity Admin, Entity
   Contributor, Executive Viewer), each with a fixed capability set defined in `src/lib/constants.ts`
   (`DSAC_WIDE_ROLES`, `READ_ONLY_ROLES`, `DOCUMENT_UPLOAD_ROLES`, `DOCUMENT_REVIEW_ROLES`,
-  `taskDirectionsForRole`). Capability checks are unit-tested (`constants.test.ts`) after a real bug
+  `canCaptureReportingData`, `canReviewReports`, `canFinaliseReports`, `canAdminister`). Capability checks are unit-tested (`constants.test.ts`) after a real bug
   was found in this exact matrix during development (Executive Viewer was missing from the DSAC-wide
   visibility list).
 - **Row-level tenant isolation is enforced in the data-access layer, not the UI.** Every query that
   touches entity-scoped data goes through `assertEntityAccess` / `entityScopeWhere` /
-  `entityIdScopeWhere` in `src/lib/tenant-scope.ts`. An entity user's session simply cannot construct a
+  `entityIdScopeWhere` in `src/lib/tenant-scope.ts`. The reporting write paths (`src/lib/data/capture.ts`,
+  `reports.ts`, `requests.ts`) each re-check the caller's role *and* that the entity, KPI, budget line or report
+  they name belongs to the caller's own organisation — so a crafted request can't write to another entity
+  (`pnpm verify:flows` asserts a 403 for both an entity writing to another entity and DSAC writing entity data).
+  Evidence links are validated the same way: a document can only be linked to the uploader's own report,
+  KPI or budget line. An entity user's session simply cannot construct a
   query that returns another entity's rows — this was verified end-to-end for entities, documents,
-  tasks, comments, and even the AI "ask the data" tools (an entity user asking "are we at risk?" gets
+  reports, performance and expenditure capture, requests, and even the AI "ask the data" tools (an entity user asking "are we at risk?" gets
   only their own entity back, never the portfolio).
 - **Least privilege**: Executive Viewer is deliberately DSAC-wide for *read* access but excluded from
-  every upload/review/task-creation/comment capability (`isReadOnlyRole`). Entity roles can never
-  approve their own document submissions — only DSAC Admin/Analyst can (`canReviewDocuments`).
+  every upload, capture, review and decision capability. Entity roles can never review, accept or finalise
+  their own reports or decide their own requests — only DSAC Admin/Analyst can review (`canReviewReports`),
+  and only DSAC Admin can finalise a report.
+- **Data integrity as a control**: once a report is submitted its figures are locked until DSAC returns it, so
+  DSAC always reviews exactly what was submitted; every capture, submission, review and request decision is
+  written to the audit log with the before/after status.
 - **MFA**: enforced via Microsoft Entra ID's own Conditional Access policies when
   `MICROSOFT_ENTRA_ID_*` is configured — this platform doesn't implement its own MFA, deliberately, so
   it inherits DSAC's existing identity governance rather than duplicating it. The demo credentials
@@ -62,9 +71,10 @@ review, a penetration test, and sign-off from DSAC's Information Officer before 
 - **Append-only `AuditLog`** (`userId`, `entityId`, `action`, `targetType`, `targetId`, `before`/`after`
   JSON, `createdAt` — no update or delete path is exposed anywhere in the app). Logged actions include:
   document view, download, upload (new version), review decisions (approve/return/start review), soft
-  delete and restore, and every AI interaction (mocked or real — see §6).
-- **Admin viewer**: `/audit-log`, restricted to DSAC Admin (the only role with this nav item at all —
-  see `src/lib/nav-items.ts`), with filters by action, entity, and date range.
+  delete and restore, performance and expenditure capture, report submission and every review decision
+  (start review/accept/return/finalise), request submission and decisions, and every AI interaction (mocked or real — see §6).
+- **Admin viewer**: **Administration → Audit log** (`/administration/audit-log`), restricted to DSAC Admin
+  (the only role with an Administration nav item — see `src/lib/nav-items.ts`), with filters by action, entity, and date range.
 - IP address capture is best-effort (`x-forwarded-for` in production behind a proxy; not meaningful for
   local dev).
 
@@ -95,12 +105,15 @@ review, a penetration test, and sign-off from DSAC's Information Officer before 
 
 ## 7. Application security controls
 
-- **Input validation**: request bodies for document upload, task creation and comment creation are
-  validated with `zod` schemas (`src/lib/validation/`) rather than ad-hoc type checks, with file-type
+- **Input validation**: request bodies for document upload, performance and expenditure capture, report review, requests,
+  task creation and comment creation are validated with `zod` schemas (`src/lib/validation/`) — amounts must
+  be finite, non-negative and bounded, and are stored to the cent rather than ad-hoc type checks, with file-type
   and file-size validation on upload (`ALLOWED_UPLOAD_MIME_TYPES`, `MAX_UPLOAD_SIZE_BYTES` in
   `src/lib/constants.ts`).
 - **Rate limiting**: an in-memory, per-user sliding-window limiter (`src/lib/rate-limit.ts`) protects
-  the AI endpoints (cost-sensitive) and the credentials login action (brute-force resistance). It's
+  the AI endpoints (cost-sensitive), the credentials login action (brute-force resistance) and every
+  reporting write endpoint (`src/lib/api-guard.ts` applies the same origin check, authentication, rate limit
+  and schema validation to all of them). It's
   process-local, which is adequate for this single-instance demo; a horizontally-scaled production
   deployment would move this to a shared store (Redis) instead.
 - **CSRF**: Auth.js's own routes carry built-in CSRF protection. Custom mutating API routes rely on

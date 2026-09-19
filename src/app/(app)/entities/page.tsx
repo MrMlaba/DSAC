@@ -1,51 +1,27 @@
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
-import { requireUser } from "@/lib/current-user";
-import { getPortfolioData } from "@/lib/data/portfolio";
-import { resolvePortfolioFilters } from "@/lib/data/portfolio-filters";
-import { PortfolioFilters } from "@/components/portfolio-filters";
-import { EntityCard } from "@/components/entity-card";
+import { requireDsacUser } from "@/lib/portal";
+import { resolveFinancialYear } from "@/lib/data/financial-years";
+import { getPortfolio } from "@/lib/data/portfolio";
+import { PageHeader } from "@/components/page-header";
+import { EntitiesTable } from "@/components/entities-table";
 
-export default async function EntitiesPage({
-  searchParams,
-}: {
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
-}) {
-  const user = await requireUser();
-  const resolvedSearchParams = await searchParams;
-  const { filters, financialYears, financialYearLabel } = await resolvePortfolioFilters(resolvedSearchParams);
-  const { rows } = await getPortfolioData(user, filters);
+export default async function EntitiesPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const user = await requireDsacUser();
+  const params = await searchParams;
+  const { financialYears, selected } = await resolveFinancialYear(params.fy);
+  const { rows } = await getPortfolio(user, selected.id);
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Entities</h1>
-          <p className="text-muted-foreground text-sm">
-            {rows.length} entit{rows.length === 1 ? "y" : "ies"} · FY {financialYearLabel}
-          </p>
-        </div>
-      </div>
-
-      <PortfolioFilters financialYears={financialYears} />
-
-      {rows.length === 0 ? (
-        <Card className="border-dashed">
-          <CardContent className="text-muted-foreground py-10 text-center text-sm">
-            No entities match the current filters.
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {rows.map((entity) => (
-            <EntityCard key={entity.id} entity={entity} />
-          ))}
-        </div>
-      )}
-
-      <Badge variant="outline" className="text-[10px]">
-        Trend charts, audit history and demographics live on each entity&apos;s detail page.
-      </Badge>
+      <PageHeader
+        title="Entities & NPOs"
+        description={`Every organisation DSAC monitors, with its compliance and performance status. Select one to open its oversight page. FY ${selected.label}.`}
+        financialYears={financialYears}
+        selectedFinancialYearId={selected.id}
+      />
+      <EntitiesTable
+        financialYearId={selected.id}
+        rows={rows.map((r) => ({ id: r.id, name: r.name, type: r.type, compliance: r.metrics.compliance.summary.status, performance: r.metrics.performance.band }))}
+      />
     </div>
   );
 }

@@ -2,44 +2,23 @@
 
 import { Button } from "@/components/ui/button";
 import { FileSpreadsheetIcon, FileDownIcon } from "lucide-react";
-import { useSearchParams } from "next/navigation";
-import { SECTOR_LABELS, ENTITY_TYPE_LABELS } from "@/lib/constants";
-import { RISK_BAND_VISUALS } from "@/lib/risk-visuals";
-import type { PortfolioEntityRow } from "@/lib/data/portfolio";
+import { formatPercent, formatRand } from "@/lib/format";
+import type { ExportRow } from "@/lib/data/export-rows";
 
-export function ExportButtons({
-  rows,
-  financialYearLabel,
-}: {
-  rows: PortfolioEntityRow[];
-  financialYearLabel: string;
-}) {
-  const searchParams = useSearchParams();
-
+export function ExportButtons({ rows, financialYearId, financialYearLabel }: { rows: ExportRow[]; financialYearId: string; financialYearLabel: string }) {
   async function exportPdf() {
-    const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
-      import("jspdf"),
-      import("jspdf-autotable"),
-    ]);
-    const doc = new jsPDF();
+    const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([import("jspdf"), import("jspdf-autotable")]);
+    const doc = new jsPDF({ orientation: "landscape" });
     doc.setFontSize(14);
-    doc.text(`DSAC Portfolio Overview — FY ${financialYearLabel}`, 14, 15);
+    doc.text(`DSAC Portfolio — FY ${financialYearLabel}`, 14, 15);
     doc.setFontSize(9);
     doc.setTextColor(120);
     doc.text("Demo – synthetic data", 14, 21);
     doc.setTextColor(0);
     autoTable(doc, {
       startY: 26,
-      head: [["Entity", "Sector", "Type", "Risk", "KPIs achieved", "Utilisation", "Compliance"]],
-      body: rows.map((r) => [
-        r.name,
-        SECTOR_LABELS[r.sector],
-        ENTITY_TYPE_LABELS[r.type],
-        RISK_BAND_VISUALS[r.riskBand].label,
-        `${r.kpiStatusCounts.ACHIEVED}/${r.totalKpis}`,
-        r.utilisationRate !== null ? `${Math.round(r.utilisationRate * 100)}%` : "—",
-        r.complianceRate !== null ? `${Math.round(r.complianceRate * 100)}%` : "—",
-      ]),
+      head: [["Organisation", "Type", "Compliance", "Performance", "Approved", "Disbursed", "Utilised", "Budget util.", "Fund util."]],
+      body: rows.map((r) => [r.name, r.type, r.compliance, r.performance, formatRand(r.approved), formatRand(r.disbursed), formatRand(r.utilised), formatPercent(r.budgetUtilisation), formatPercent(r.fundUtilisation)]),
       styles: { fontSize: 8 },
       headStyles: { fillColor: [10, 92, 54] },
     });
@@ -48,7 +27,7 @@ export function ExportButtons({
 
   return (
     <div className="flex gap-2">
-      <Button variant="outline" size="sm" render={<a href={`/api/export/portfolio?${searchParams.toString()}`} download />}>
+      <Button variant="outline" size="sm" render={<a href={`/api/export/portfolio?fy=${financialYearId}`} download />}>
         <FileSpreadsheetIcon />
         Excel
       </Button>

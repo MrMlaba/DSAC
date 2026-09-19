@@ -1,63 +1,65 @@
 import { NextRequest, NextResponse } from "next/server";
 import ExcelJS from "exceljs";
 import { requireUser } from "@/lib/current-user";
-import { getPortfolioData } from "@/lib/data/portfolio";
-import { resolvePortfolioFilters } from "@/lib/data/portfolio-filters";
-import { SECTOR_LABELS, ENTITY_TYPE_LABELS } from "@/lib/constants";
-import { RISK_BAND_VISUALS } from "@/lib/risk-visuals";
+import { getPortfolio } from "@/lib/data/portfolio";
+import { resolveFinancialYear } from "@/lib/data/financial-years";
+import { toExportRows } from "@/lib/data/export-rows";
 
 export async function GET(request: NextRequest) {
   const user = await requireUser();
-  const searchParams = Object.fromEntries(request.nextUrl.searchParams.entries());
-  const { filters, financialYearLabel } = await resolvePortfolioFilters(searchParams);
-  const { rows } = await getPortfolioData(user, filters);
+  const { selected } = await resolveFinancialYear(request.nextUrl.searchParams.get("fy") ?? undefined);
+  const { rows, summary } = await getPortfolio(user, selected.id);
+  const exportRows = toExportRows(rows);
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "DSAC Performance & Reporting Platform (Demo)";
-  const sheetName = `FY ${financialYearLabel.replace("/", "-")}`.slice(0, 31);
-  const sheet = workbook.addWorksheet(sheetName);
+  workbook.creator = "DSAC Reporting and Oversight Platform (Demo)";
+  const sheet = workbook.addWorksheet(`FY ${selected.label.replace("/", "-")}`.slice(0, 31));
 
   sheet.columns = [
-    { header: "Entity", key: "name", width: 40 },
+    { header: "Organisation", key: "name", width: 40 },
     { header: "Type", key: "type", width: 16 },
     { header: "Sector", key: "sector", width: 14 },
-    { header: "Risk band", key: "risk", width: 14 },
-    { header: "Risk score", key: "riskScore", width: 12 },
-    { header: "KPIs achieved", key: "achieved", width: 14 },
-    { header: "KPIs total", key: "total", width: 12 },
-    { header: "Fund allocated (R)", key: "allocated", width: 18 },
-    { header: "Fund spent (R)", key: "spent", width: 16 },
-    { header: "Utilisation", key: "utilisation", width: 12 },
-    { header: "Submission compliance", key: "compliance", width: 20 },
+    { header: "Compliance", key: "compliance", width: 20 },
+    { header: "Compliance rate", key: "complianceRate", width: 16 },
+    { header: "Performance", key: "performance", width: 14 },
+    { header: "Overall performance", key: "overallPerformance", width: 18 },
+    { header: "Approved budget (R)", key: "approved", width: 20 },
+    { header: "Disbursed (R)", key: "disbursed", width: 18 },
+    { header: "Utilised (R)", key: "utilised", width: 18 },
+    { header: "Budget utilisation", key: "budgetUtilisation", width: 18 },
+    { header: "Utilisation of disbursed", key: "fundUtilisation", width: 22 },
+    { header: "Reports submitted", key: "reportsSubmitted", width: 17 },
+    { header: "Reports outstanding", key: "reportsOutstanding", width: 19 },
   ];
   sheet.getRow(1).font = { bold: true };
 
-  for (const row of rows) {
-    sheet.addRow({
-      name: row.name,
-      type: ENTITY_TYPE_LABELS[row.type],
-      sector: SECTOR_LABELS[row.sector],
-      risk: RISK_BAND_VISUALS[row.riskBand].label,
-      riskScore: row.riskScore ?? "",
-      achieved: row.kpiStatusCounts.ACHIEVED,
-      total: row.totalKpis,
-      allocated: row.fundAllocated,
-      spent: row.fundSpent,
-      utilisation: row.utilisationRate ?? "",
-      compliance: row.complianceRate ?? "",
-    });
+  for (const row of exportRows) {
+    sheet.addRow({ ...row, complianceRate: row.complianceRate ?? "", overallPerformance: row.overallPerformance ?? "", budgetUtilisation: row.budgetUtilisation ?? "", fundUtilisation: row.fundUtilisation ?? "" });
   }
-  sheet.getColumn("utilisation").numFmt = "0%";
-  sheet.getColumn("compliance").numFmt = "0%";
-  sheet.getColumn("allocated").numFmt = "#,##0";
-  sheet.getColumn("spent").numFmt = "#,##0";
+
+  // Totals come from the same pooled portfolio figures as the dashboard, not from re-adding the rows above.
+  const totals = sheet.addRow({
+    name: "PORTFOLIO TOTAL",
+    approved: summary.finance.approved,
+    disbursed: summary.finance.disbursed,
+    utilised: summary.finance.utilised,
+    budgetUtilisation: summary.finance.budgetUtilisation ?? "",
+    fundUtilisation: summary.finance.fundUtilisation ?? "",
+    complianceRate: summary.compliance.rate ?? "",
+    overallPerformance: summary.performance.overall ?? "",
+    reportsSubmitted: summary.compliance.submitted,
+    reportsOutstanding: summary.compliance.outstanding,
+  });
+  totals.font = { bold: true };
+
+  for (const key of ["complianceRate", "overallPerformance", "budgetUtilisation", "fundUtilisation"]) sheet.getColumn(key).numFmt = "0.0%";
+  for (const key of ["approved", "disbursed", "utilised"]) sheet.getColumn(key).numFmt = "#,##0";
 
   const buffer = await workbook.xlsx.writeBuffer();
-
   return new NextResponse(buffer, {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Disposition": `attachment; filename="dsac-portfolio-${financialYearLabel.replace("/", "-")}.xlsx"`,
+      "Content-Disposition": `attachment; filename="dsac-portfolio-${selected.label.replace("/", "-")}.xlsx"`,
     },
   });
 }

@@ -5,36 +5,62 @@ import { getClaudeClient, isAiConfigured, CLAUDE_MODEL } from "@/lib/ai/claude";
 import { redactPii } from "@/lib/ai/redact";
 import { logAiInteraction } from "@/lib/ai/audit";
 import type { CurrentUser } from "@/lib/tenant-scope";
-import { getPortfolioData } from "@/lib/data/portfolio";
+import { getPortfolio } from "@/lib/data/portfolio";
 import { getDefaultFinancialYear } from "@/lib/data/financial-years";
 import { listEntityRisk } from "@/lib/data/risk";
-import { listDeadlines } from "@/lib/data/deadlines";
+import { listReports } from "@/lib/data/reports";
+import { formatPercent, formatRand, formatRandCompact } from "@/lib/format";
+import { ENTITY_COMPLIANCE_LABELS, PERFORMANCE_BAND_LABELS } from "@/lib/constants";
 
 export interface AskTheDataResult {
   answer: string;
   toolsUsed: string[];
 }
 
+/** The portfolio figures as plain strings — formatted by the same functions the dashboard uses, so an answer can never disagree with the screen. */
+async function portfolioFigures(user: CurrentUser) {
+  const fy = await getDefaultFinancialYear();
+  if (!fy) return null;
+  const { rows, summary } = await getPortfolio(user, fy.id);
+  return {
+    fy,
+    rows,
+    summary,
+    text: {
+      financialYear: fy.label,
+      organisationsInScope: summary.entityCount,
+      publicEntities: summary.publicEntityCount,
+      npos: summary.npoCount,
+      totalApprovedBudget: formatRand(summary.finance.approved),
+      totalDisbursed: formatRand(summary.finance.disbursed),
+      totalUtilised: formatRand(summary.finance.utilised),
+      overallUtilisationOfDisbursed: formatPercent(summary.finance.fundUtilisation),
+      budgetUtilisationOfApproved: formatPercent(summary.finance.budgetUtilisation),
+      overallKpiPerformance: formatPercent(summary.performance.overall),
+      overallComplianceRate: formatPercent(summary.compliance.rate),
+      reportsSubmitted: summary.compliance.submitted,
+      reportsOutstanding: summary.compliance.outstanding,
+      organisationsOverdueReporting: summary.complianceStatuses.OVERDUE_REPORTING,
+      organisationsUnderTarget: summary.performanceBands.UNDER_TARGET,
+    },
+  };
+}
+
 /**
- * "Ask the data" — a fixed set of safe, tenant-scoped query tools, never raw
- * SQL. Every tool here is a thin wrapper around a data-access function this
- * app already uses elsewhere (getPortfolioData, listEntityRisk,
- * listDeadlines), so tenant isolation and RBAC come for free — the model
- * can only ever see what the calling user could already see on their own
- * dashboard.
+ * "Ask the data" — a fixed set of safe, tenant-scoped query tools, never raw SQL. Every tool is a
+ * thin wrapper around a data-access function the app already uses (getPortfolio, listEntityRisk,
+ * listReports), so tenant isolation and RBAC come for free and the numbers match the dashboards.
  */
 function buildTools(user: CurrentUser, onUse: (name: string) => void) {
   const getPortfolioOverview = betaZodTool({
     name: "get_portfolio_overview",
     description:
-      "Portfolio-wide summary for the current financial year: entity counts, average fund utilisation, average submission compliance, and KPI status breakdown. Scoped to whatever entities the current user can see.",
+      "Portfolio-wide summary for the current financial year: entity counts, total approved budget, disbursed and utilised amounts, overall utilisation, KPI performance, compliance rate and report counts. Scoped to whatever the current user can see.",
     inputSchema: z.object({}),
     run: async () => {
       onUse("get_portfolio_overview");
-      const fy = await getDefaultFinancialYear();
-      if (!fy) return JSON.stringify({ error: "No financial years seeded." });
-      const { summary } = await getPortfolioData(user, { financialYearId: fy.id });
-      return JSON.stringify(summary);
+      const figures = await portfolioFigures(user);
+      return JSON.stringify(figures?.text ?? { error: "No financial years seeded." });
     },
   });
 
@@ -47,57 +73,60 @@ function buildTools(user: CurrentUser, onUse: (name: string) => void) {
       const risk = await listEntityRisk(user);
       const filtered = input.band ? risk.filter((r) => r.band === input.band) : risk;
       return JSON.stringify(
-        filtered.map((r) => ({
-          entity: r.entityName,
-          score: r.score,
-          band: r.band,
-          topFactor: r.factors[0]?.label ?? null,
-          probabilityMissTarget: r.probabilityMissTarget,
-          probabilityLateSubmission: r.probabilityLateSubmission,
-        })),
+        filtered.map((r) => ({ entity: r.entityName, score: r.score, band: r.band, topFactor: r.factors[0]?.label ?? null, probabilityMissTarget: r.probabilityMissTarget, probabilityLateSubmission: r.probabilityLateSubmission })),
       );
     },
   });
 
   const getEntitySummary = betaZodTool({
     name: "get_entity_summary",
-    description: "Looks up one entity by name (partial match is fine) and returns its risk score, contributing factors, and predicted probabilities.",
+    description: "Looks up one organisation by name (partial match is fine) and returns its finance, performance, compliance and risk figures.",
     inputSchema: z.object({ entityName: z.string().describe("Full or partial entity name") }),
     run: async (input) => {
       onUse("get_entity_summary");
-      const risk = await listEntityRisk(user);
-      const match = risk.find((r) => r.entityName.toLowerCase().includes(input.entityName.toLowerCase()));
-      if (!match) return JSON.stringify({ error: `No entity matching "${input.entityName}" in your scope.` });
-      return JSON.stringify(match);
+      const figures = await portfolioFigures(user);
+      const row = figures?.rows.find((r) => r.name.toLowerCase().includes(input.entityName.toLowerCase()));
+      if (!row) return JSON.stringify({ error: `No organisation matching "${input.entityName}" in your scope.` });
+      const m = row.metrics;
+      return JSON.stringify({
+        organisation: row.name,
+        approvedBudget: formatRand(m.finance.summary.approved),
+        disbursed: formatRand(m.finance.summary.disbursed),
+        utilised: formatRand(m.finance.summary.utilised),
+        budgetUtilisation: formatPercent(m.finance.summary.budgetUtilisation),
+        utilisationOfDisbursed: formatPercent(m.finance.summary.fundUtilisation),
+        overallPerformance: formatPercent(m.performance.summary.overall),
+        performance: PERFORMANCE_BAND_LABELS[m.performance.band],
+        compliance: ENTITY_COMPLIANCE_LABELS[m.compliance.summary.status],
+        complianceRate: formatPercent(m.compliance.summary.rate),
+        reportsOutstanding: m.compliance.summary.outstanding,
+        riskBand: row.riskBand,
+        riskScore: row.riskScore,
+      });
     },
   });
 
-  const listUpcomingDeadlines = betaZodTool({
-    name: "list_upcoming_deadlines",
-    description: "Lists reporting deadlines due within 60 days or already overdue, with days remaining and submission status.",
+  const listOutstandingReports = betaZodTool({
+    name: "list_outstanding_reports",
+    description: "Lists reports that are overdue or due within 60 days and not yet submitted, with the organisation, due date and days remaining.",
     inputSchema: z.object({}),
     run: async () => {
-      onUse("list_upcoming_deadlines");
-      const list = await listDeadlines(user);
-      const relevant = list.filter((d) => d.daysRemaining <= 60).slice(0, 15);
-      return JSON.stringify(
-        relevant.map((d) => ({
-          title: d.title,
-          dueDate: d.dueDate,
-          daysRemaining: d.daysRemaining,
-          satisfiedForYourEntity: d.isSatisfiedForViewer,
-          complianceAcrossEntities: d.compliance,
-        })),
-      );
+      onUse("list_outstanding_reports");
+      const fy = await getDefaultFinancialYear();
+      if (!fy) return JSON.stringify({ error: "No financial years seeded." });
+      const reports = await listReports(user, { financialYearId: fy.id });
+      const relevant = reports.filter((r) => (r.status === "DRAFT" || r.status === "RETURNED") && r.compliance.daysUntilDue <= 60).sort((a, b) => a.compliance.daysUntilDue - b.compliance.daysUntilDue).slice(0, 20);
+      return JSON.stringify(relevant.map((r) => ({ organisation: r.entityName, report: r.title, dueDate: r.dueDate.toISOString().slice(0, 10), daysRemaining: r.compliance.daysUntilDue, status: r.status })));
     },
   });
 
-  return [getPortfolioOverview, listEntitiesByRisk, getEntitySummary, listUpcomingDeadlines];
+  return [getPortfolioOverview, listEntitiesByRisk, getEntitySummary, listOutstandingReports];
 }
 
 const SYSTEM_PROMPT = [
-  "You are an analyst assistant embedded in the DSAC Public Entities Performance & Reporting Platform, a hackathon prototype using entirely synthetic demo data.",
-  "Answer the user's question using ONLY the tool results you receive — never invent figures, entity names, or dates.",
+  "You are an analyst assistant embedded in the DSAC Public Entity & NPO Reporting and Oversight Platform, a hackathon prototype using entirely synthetic demo data.",
+  "Answer the user's question using ONLY the tool results you receive — never invent figures, entity names, or dates, and never recompute a figure the tools already give you.",
+  "Note there are two utilisation measures: 'overall utilisation' is utilised ÷ disbursed, and 'budget utilisation' is utilised ÷ approved budget. Say which one you are quoting.",
   "If the available tools don't cover what's being asked, say so plainly instead of guessing.",
   "Keep answers concise: a short paragraph or a short list. Cite specific entity names and numbers from the tool output.",
 ].join(" ");
@@ -110,31 +139,31 @@ async function mockAnswer(user: CurrentUser, question: string): Promise<AskTheDa
     const risk = await listEntityRisk(user);
     const top = risk.slice(0, 3);
     return {
-      answer:
-        top.length === 0
-          ? "No risk scores have been computed yet."
-          : `Highest-risk entities right now: ${top.map((r) => `${r.entityName} (${r.band}, score ${r.score})`).join("; ")}.`,
+      answer: top.length === 0 ? "No risk scores have been computed yet." : `Highest-risk organisations right now: ${top.map((r) => `${r.entityName} (${r.band}, score ${r.score})`).join("; ")}.`,
       toolsUsed: ["list_entities_by_risk"],
     };
   }
 
-  if (/(deadline|overdue|due|submit)/.test(q)) {
-    const deadlines = await listDeadlines(user);
-    const overdue = deadlines.filter((d) => d.daysRemaining < 0 && d.isSatisfiedForViewer !== true);
-    const soon = deadlines.filter((d) => d.daysRemaining >= 0 && d.daysRemaining <= 30);
-    return {
-      answer: `${overdue.length} deadline(s) overdue, ${soon.length} due within 30 days.${overdue[0] ? ` Most urgent: "${overdue[0].title}".` : ""}`,
-      toolsUsed: ["list_upcoming_deadlines"],
-    };
+  if (/(deadline|overdue|due|submit|outstanding|report)/.test(q)) {
+    const fy = await getDefaultFinancialYear();
+    if (fy) {
+      const reports = await listReports(user, { financialYearId: fy.id });
+      const owed = reports.filter((r) => r.status === "DRAFT" || r.status === "RETURNED");
+      const overdue = owed.filter((r) => r.compliance.daysUntilDue < 0);
+      const soon = owed.filter((r) => r.compliance.daysUntilDue >= 0 && r.compliance.daysUntilDue <= 30);
+      const worst = [...overdue].sort((a, b) => a.compliance.daysUntilDue - b.compliance.daysUntilDue)[0];
+      return {
+        answer: `${overdue.length} report(s) overdue and ${soon.length} due within 30 days.${worst ? ` Longest overdue: "${worst.title}" from ${worst.entityName} (${-worst.compliance.daysUntilDue} days).` : ""}`,
+        toolsUsed: ["list_outstanding_reports"],
+      };
+    }
   }
 
-  const fy = await getDefaultFinancialYear();
-  if (fy) {
-    const { summary } = await getPortfolioData(user, { financialYearId: fy.id });
+  const figures = await portfolioFigures(user);
+  if (figures) {
+    const t = figures.text;
     return {
-      answer: `Portfolio overview (FY ${fy.label}): ${summary.entityCount} entities in scope, average fund utilisation ${
-        summary.avgUtilisationRate !== null ? Math.round(summary.avgUtilisationRate * 100) + "%" : "—"
-      }, average submission compliance ${summary.avgComplianceRate !== null ? Math.round(summary.avgComplianceRate * 100) + "%" : "—"}. ANTHROPIC_API_KEY isn't set, so this is a keyword-routed answer over real data rather than a Claude-generated one.`,
+      answer: `FY ${t.financialYear}: ${t.organisationsInScope} organisations in scope. Approved ${formatRandCompact(figures.summary.finance.approved)}, disbursed ${t.totalDisbursed}, utilised ${t.totalUtilised} — overall utilisation ${t.overallUtilisationOfDisbursed} of disbursed funds (${t.budgetUtilisationOfApproved} of the approved budget). KPI performance ${t.overallKpiPerformance}; compliance rate ${t.overallComplianceRate}. ANTHROPIC_API_KEY isn't set, so this is a keyword-routed answer over real data rather than a Claude-generated one.`,
       toolsUsed: ["get_portfolio_overview"],
     };
   }
@@ -162,9 +191,7 @@ export async function askTheData(user: CurrentUser, question: string): Promise<A
     messages: [{ role: "user", content: redactedQuestion }],
   });
 
-  const textBlock = finalMessage.content.find(
-    (b): b is Anthropic.Beta.BetaTextBlock => b.type === "text",
-  );
+  const textBlock = finalMessage.content.find((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text");
   const answer = textBlock?.text ?? "I couldn't produce an answer from the available data.";
 
   await logAiInteraction({ userId: user.id, action: "ASK_THE_DATA", promptSummary: redactedQuestion, responseSummary: answer });

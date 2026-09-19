@@ -11,26 +11,34 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { DOCUMENT_TYPE_LABELS, DOCUMENT_TYPE_ORDER, PORTFOLIO_QUARTERS, QUARTER_LABELS, QUARTERLY_DOCUMENT_TYPES } from "@/lib/constants";
+import type { EvidenceTargets } from "@/lib/data/evidence";
 import type { DocumentType, Quarter } from "@prisma/client";
 
 export function UploadDocumentDialog({
   entities,
   financialYears,
   defaultFinancialYearId,
+  targets,
+  initialLink,
 }: {
   entities: { id: string; name: string }[];
   financialYears: { id: string; label: string }[];
   defaultFinancialYearId: string;
+  /** What this entity's evidence can be linked to. Omitted for DSAC staff, who upload across entities. */
+  targets?: EvidenceTargets;
+  /** Pre-selected link, e.g. "report:<id>" — set when arriving from a "Go to Documents" prompt. */
+  initialLink?: string;
 }) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const changeNoteRef = useRef<HTMLTextAreaElement>(null);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(Boolean(initialLink));
+  const [link, setLink] = useState(initialLink ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [entityId, setEntityId] = useState(entities[0]?.id ?? "");
-  const [type, setType] = useState<DocumentType>("QUARTERLY_REPORT");
+  const [type, setType] = useState<DocumentType>(initialLink ? "OTHER" : "QUARTERLY_REPORT");
   const [financialYearId, setFinancialYearId] = useState(defaultFinancialYearId);
   const [quarter, setQuarter] = useState<Quarter>("Q1");
   const [title, setTitle] = useState("");
@@ -58,6 +66,8 @@ export function UploadDocumentDialog({
       form.set("title", title || file.name);
       const changeNote = changeNoteRef.current?.value;
       if (changeNote) form.set("changeNote", changeNote);
+      const [linkKind, linkId] = link.split(":");
+      if (linkId) form.set(linkKind === "report" ? "reportId" : linkKind === "kpi" ? "kpiId" : "budgetLineId", linkId);
 
       const res = await fetch("/api/documents", { method: "POST", body: form });
       const data = await res.json();
@@ -162,6 +172,42 @@ export function UploadDocumentDialog({
             <Label>Title</Label>
             <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Q1 Quarterly Performance Report" />
           </div>
+
+          {targets && (
+            <div className="space-y-1.5">
+              <Label htmlFor="evidence-link">This document supports</Label>
+              <select
+                id="evidence-link"
+                value={link}
+                onChange={(e) => setLink(e.target.value)}
+                className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-full rounded-lg border px-2.5 text-sm outline-none focus-visible:ring-3"
+              >
+                <option value="">Nothing in particular (general document)</option>
+                <optgroup label="A report or compliance requirement">
+                  {targets.reports.map((t) => (
+                    <option key={t.id} value={`report:${t.id}`}>
+                      {t.label}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="A KPI">
+                  {targets.kpis.map((t) => (
+                    <option key={t.id} value={`kpi:${t.id}`}>
+                      {t.label}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="A budget line">
+                  {targets.lines.map((t) => (
+                    <option key={t.id} value={`line:${t.id}`}>
+                      {t.label}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+              <p className="text-muted-foreground text-xs">Attachments are evidence — link them to what they prove so DSAC sees them in context.</p>
+            </div>
+          )}
 
           <div className="space-y-1.5">
             <Label>Change note (optional)</Label>

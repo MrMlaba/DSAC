@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import {
   PrismaClient,
   type Quarter,
-  type KpiStatus,
   type Gender,
   type RaceCategory,
   type AgeBand,
@@ -11,153 +10,251 @@ import {
   type AuditSeverity,
   type DocumentType,
   type ReviewStatus,
+  type ReportKind,
+  type ReportStatus,
+  type ExpenseCategory,
+  type RequestCategory,
+  type RequestStatus,
+  type KpiAggregation,
+  type Prisma,
 } from "@prisma/client";
 import { faker } from "@faker-js/faker";
 import bcrypt from "bcryptjs";
-import { ENTITY_SEEDS, type EntitySector, type RiskProfile } from "../src/lib/seed-data/entities";
+import { ENTITY_SEEDS, type EntitySeed, type RiskProfile } from "../src/lib/seed-data/entities";
 import { DEMO_USERS, DEMO_PASSWORD } from "../src/lib/seed-data/demo-users";
 import { storage } from "../src/lib/storage";
 import { recalculateAllRiskScores } from "../src/lib/risk-engine";
+import { now } from "../src/lib/clock";
+import { annualReportDueDate, quarterBounds, quarterlyReportDueDate, reportTitle } from "../src/lib/reporting-calendar";
 
 const prisma = new PrismaClient();
 
 faker.seed(2026);
 
+const NOW = now();
+const DAY_MS = 86_400_000;
+const addDays = (date: Date, days: number) => new Date(date.getTime() + days * DAY_MS);
+const daysBetween = (from: Date, to: Date) => Math.floor((to.getTime() - from.getTime()) / DAY_MS);
+const round100 = (n: number) => Math.round(n / 100) * 100;
+
 // ---------------------------------------------------------------------------
 // Reference data
 // ---------------------------------------------------------------------------
 
-const GENERIC_KPI_POOL = [
-  { name: "Annual Performance Plan targets achieved", unit: "%", category: "Governance" },
-  { name: "Quarterly reports submitted on time", unit: "%", category: "Compliance" },
-  { name: "Governance meetings held", unit: "meetings", category: "Governance" },
-  { name: "Risk management reviews completed", unit: "reviews", category: "Governance" },
-  { name: "Vacancy rate maintained within target", unit: "%", category: "Human Resources" },
-  { name: "Employment equity targets met", unit: "%", category: "Human Resources" },
-  { name: "Supply chain management compliance", unit: "%", category: "Compliance" },
-  { name: "Stakeholder satisfaction score", unit: "score", category: "Stakeholder Management" },
-  { name: "Internal audit findings resolved", unit: "%", category: "Governance" },
+type KpiTemplate = { name: string; unit: string; programme: string };
+
+const GENERIC_KPI_POOL: KpiTemplate[] = [
+  { name: "Annual Performance Plan targets achieved", unit: "%", programme: "Governance" },
+  { name: "Quarterly reports submitted on time", unit: "%", programme: "Compliance" },
+  { name: "Governance meetings held", unit: "meetings", programme: "Governance" },
+  { name: "Risk management reviews completed", unit: "reviews", programme: "Governance" },
+  { name: "Vacancy rate maintained within target", unit: "%", programme: "Human Resources" },
+  { name: "Employment equity targets met", unit: "%", programme: "Human Resources" },
+  { name: "Supply chain management compliance", unit: "%", programme: "Compliance" },
+  { name: "Stakeholder satisfaction score", unit: "score", programme: "Stakeholder Management" },
+  { name: "Internal audit findings resolved", unit: "%", programme: "Governance" },
 ];
 
-const SECTOR_KPI_POOL: Record<EntitySector, { name: string; unit: string; category: string }[]> = {
+const SECTOR_KPI_POOL: Record<string, KpiTemplate[]> = {
   SPORT: [
-    { name: "Athletes supported through high-performance programmes", unit: "athletes", category: "Athlete Development" },
-    { name: "Coaches accredited", unit: "coaches", category: "Capacity Building" },
-    { name: "School sport leagues completed", unit: "leagues", category: "Participation" },
-    { name: "National championships hosted", unit: "events", category: "Events" },
-    { name: "Anti-doping tests conducted", unit: "tests", category: "Compliance" },
-    { name: "Facilities upgraded", unit: "facilities", category: "Infrastructure" },
-    { name: "Talent identification camps held", unit: "camps", category: "Athlete Development" },
-    { name: "Participants reached in rural outreach", unit: "participants", category: "Participation" },
+    { name: "Athletes supported through high-performance programmes", unit: "athletes", programme: "Athlete Development" },
+    { name: "Coaches accredited", unit: "coaches", programme: "Capacity Building" },
+    { name: "School sport leagues completed", unit: "leagues", programme: "Participation" },
+    { name: "National championships hosted", unit: "events", programme: "Events" },
+    { name: "Anti-doping tests conducted", unit: "tests", programme: "Compliance" },
+    { name: "Facilities upgraded", unit: "facilities", programme: "Infrastructure" },
+    { name: "Talent identification camps held", unit: "camps", programme: "Athlete Development" },
+    { name: "Participants reached in rural outreach", unit: "participants", programme: "Participation" },
   ],
   ARTS: [
-    { name: "Productions staged", unit: "productions", category: "Production" },
-    { name: "Artists and practitioners funded", unit: "artists", category: "Grant-making" },
-    { name: "Public art commissions completed", unit: "commissions", category: "Production" },
-    { name: "Audience members reached", unit: "attendees", category: "Audience Development" },
-    { name: "Bursaries awarded", unit: "bursaries", category: "Capacity Building" },
-    { name: "Touring performances presented", unit: "performances", category: "Production" },
+    { name: "Productions staged", unit: "productions", programme: "Production" },
+    { name: "Artists and practitioners funded", unit: "artists", programme: "Grant-making" },
+    { name: "Public art commissions completed", unit: "commissions", programme: "Production" },
+    { name: "Audience members reached", unit: "attendees", programme: "Audience Development" },
+    { name: "Bursaries awarded", unit: "bursaries", programme: "Capacity Building" },
+    { name: "Touring performances presented", unit: "performances", programme: "Production" },
   ],
   CULTURE: [
-    { name: "Cultural festivals supported", unit: "festivals", category: "Events" },
-    { name: "Heritage days commemorated", unit: "events", category: "Events" },
-    { name: "Language development projects completed", unit: "projects", category: "Language Development" },
-    { name: "Community cultural programmes funded", unit: "programmes", category: "Grant-making" },
+    { name: "Cultural festivals supported", unit: "festivals", programme: "Events" },
+    { name: "Heritage days commemorated", unit: "events", programme: "Events" },
+    { name: "Language development projects completed", unit: "projects", programme: "Language Development" },
+    { name: "Community cultural programmes funded", unit: "programmes", programme: "Grant-making" },
   ],
   HERITAGE: [
-    { name: "Heritage sites restored", unit: "sites", category: "Conservation" },
-    { name: "Heritage impact assessments completed", unit: "assessments", category: "Compliance" },
-    { name: "Memorials and monuments maintained", unit: "monuments", category: "Conservation" },
-    { name: "Custodian communities supported", unit: "communities", category: "Community Support" },
+    { name: "Heritage sites restored", unit: "sites", programme: "Conservation" },
+    { name: "Heritage impact assessments completed", unit: "assessments", programme: "Compliance" },
+    { name: "Memorials and monuments maintained", unit: "monuments", programme: "Conservation" },
+    { name: "Custodian communities supported", unit: "communities", programme: "Community Support" },
   ],
   MUSEUMS: [
-    { name: "Visitor numbers", unit: "visitors", category: "Public Access" },
-    { name: "Exhibitions held", unit: "exhibitions", category: "Public Access" },
-    { name: "Collection items digitised", unit: "items", category: "Digitisation" },
-    { name: "School education programmes delivered", unit: "programmes", category: "Education" },
+    { name: "Visitor numbers", unit: "visitors", programme: "Public Access" },
+    { name: "Exhibitions held", unit: "exhibitions", programme: "Public Access" },
+    { name: "Collection items digitised", unit: "items", programme: "Digitisation" },
+    { name: "School education programmes delivered", unit: "programmes", programme: "Education" },
   ],
   LIBRARIES: [
-    { name: "Libraries equipped or upgraded", unit: "libraries", category: "Infrastructure" },
-    { name: "Books and materials distributed", unit: "items", category: "Access" },
-    { name: "Digital literacy sessions run", unit: "sessions", category: "Digital Inclusion" },
-    { name: "Accessible-format titles produced", unit: "titles", category: "Access" },
+    { name: "Libraries equipped or upgraded", unit: "libraries", programme: "Infrastructure" },
+    { name: "Books and materials distributed", unit: "items", programme: "Access" },
+    { name: "Digital literacy sessions run", unit: "sessions", programme: "Digital Inclusion" },
+    { name: "Accessible-format titles produced", unit: "titles", programme: "Access" },
   ],
   ARCHIVES: [
-    { name: "Archival records digitised", unit: "records", category: "Digitisation" },
-    { name: "Public access requests processed", unit: "requests", category: "Public Access" },
-    { name: "Records management audits completed", unit: "audits", category: "Compliance" },
+    { name: "Archival records digitised", unit: "records", programme: "Digitisation" },
+    { name: "Public access requests processed", unit: "requests", programme: "Public Access" },
+    { name: "Records management audits completed", unit: "audits", programme: "Compliance" },
   ],
   OTHER: [],
 };
 
-const QUARTERS: Quarter[] = ["Q1", "Q2", "Q3", "Q4"];
+const PROGRAMME_OBJECTIVES: Record<string, string> = {
+  Governance: "Sound corporate governance and accountability",
+  Compliance: "Full compliance with prescribed legislation and reporting duties",
+  "Human Resources": "A capable, transformed and stable workforce",
+  "Stakeholder Management": "Strong partnerships and stakeholder confidence",
+  "Athlete Development": "Grow the pipeline of elite and emerging athletes",
+  "Capacity Building": "Build the skills of practitioners and administrators",
+  Participation: "Increase active participation, especially in under-served communities",
+  Events: "Deliver high-impact national events",
+  Infrastructure: "Provide accessible, well-maintained facilities",
+  Production: "Sustain a vibrant national production output",
+  "Grant-making": "Invest funding where it creates the most cultural value",
+  "Audience Development": "Grow and diversify audiences",
+  "Language Development": "Promote and develop the official languages",
+  Conservation: "Protect and conserve the nation's heritage resources",
+  "Community Support": "Empower custodian communities",
+  "Public Access": "Open collections and services to the public",
+  Digitisation: "Preserve and open up collections digitally",
+  Education: "Use collections to educate learners",
+  Access: "Widen access to reading and knowledge",
+  "Digital Inclusion": "Close the digital divide",
+};
 
-interface FinancialYearDef {
-  label: string;
-  startDate: Date;
-  endDate: Date;
-}
+const BIG_COUNT_UNITS = new Set(["athletes", "participants", "attendees", "visitors", "items", "records", "sessions", "requests", "titles"]);
 
-const FINANCIAL_YEARS: FinancialYearDef[] = [
-  { label: "2024/25", startDate: new Date("2024-04-01"), endDate: new Date("2025-03-31") },
-  { label: "2025/26", startDate: new Date("2025-04-01"), endDate: new Date("2026-03-31") },
-  { label: "2026/27", startDate: new Date("2026-04-01"), endDate: new Date("2027-03-31") },
+const EXPENSE_CATEGORIES: ExpenseCategory[] = [
+  "EMPLOYEE_COSTS",
+  "PROGRAMME_COSTS",
+  "TRAVEL",
+  "ADMINISTRATION",
+  "PROFESSIONAL_FEES",
+  "CAPITAL_EXPENDITURE",
+  "OTHER",
+];
+const BASE_BUDGET_SHARE: Record<ExpenseCategory, number> = {
+  EMPLOYEE_COSTS: 0.3,
+  PROGRAMME_COSTS: 0.4,
+  TRAVEL: 0.04,
+  ADMINISTRATION: 0.1,
+  PROFESSIONAL_FEES: 0.06,
+  CAPITAL_EXPENDITURE: 0.07,
+  OTHER: 0.03,
+};
+
+const QUARTERS: Extract<Quarter, "Q1" | "Q2" | "Q3" | "Q4">[] = ["Q1", "Q2", "Q3", "Q4"];
+const KPI_PHASING = [0.15, 0.3, 0.3, 0.25]; // cumulative 15% / 45% / 75% / 100% of the annual target
+const RATE_RAMP = [0.8, 0.88, 0.94, 1]; // share of the year-end target expected by each quarter, for rate KPIs
+const SPEND_PHASING = [0.22, 0.26, 0.26, 0.26];
+
+const FINANCIAL_YEARS = [
+  { label: "2024/25", startDate: new Date("2024-04-01T00:00:00Z"), endDate: new Date("2025-03-31T00:00:00Z"), budgetFactor: 0.9 },
+  { label: "2025/26", startDate: new Date("2025-04-01T00:00:00Z"), endDate: new Date("2026-03-31T00:00:00Z"), budgetFactor: 0.95 },
+  { label: "2026/27", startDate: new Date("2026-04-01T00:00:00Z"), endDate: new Date("2027-03-31T00:00:00Z"), budgetFactor: 1 },
 ];
 
-const TODAY = new Date("2026-09-17");
+const PROVINCES = ["Gauteng", "Western Cape", "KwaZulu-Natal", "Eastern Cape", "Limpopo", "Mpumalanga", "Free State", "North West", "Northern Cape"];
 
-function quarterDates(fyStart: Date, quarter: Quarter) {
-  const qIndex = QUARTERS.indexOf(quarter);
-  const start = new Date(fyStart);
-  start.setMonth(start.getMonth() + qIndex * 3);
-  const end = new Date(start);
-  end.setMonth(end.getMonth() + 3);
-  end.setDate(end.getDate() - 1);
-  const dueDate = new Date(end);
-  dueDate.setDate(dueDate.getDate() + 30);
-  return { start, end, dueDate };
-}
+const RETURN_REASONS: Record<ReportKind, string[]> = {
+  QUARTERLY_PERFORMANCE: [
+    "Variance explanations required for underperforming targets.",
+    "Missing supporting evidence for claimed achievements.",
+    "Reported quarterly results do not reconcile with the evidence submitted.",
+  ],
+  QUARTERLY_FINANCIAL: [
+    "Reported expenditure does not reconcile with the bank statements provided.",
+    "Please explain the spend on Travel against the approved budget line.",
+    "Supporting invoices are missing for Professional Fees.",
+  ],
+  GOVERNANCE_RETURN: ["Executive authority sign-off page is missing.", "Board meeting attendance register is incomplete."],
+  ANNUAL_REPORT: ["The audited financial statements are not attached.", "Executive authority sign-off page is missing."],
+};
 
-function pickN<T>(arr: T[], n: number): T[] {
-  const shuffled = faker.helpers.shuffle(arr);
-  const result: T[] = [];
-  for (let i = 0; i < n; i++) {
-    result.push(shuffled[i % shuffled.length]);
-  }
-  return result;
-}
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
-// ---------------------------------------------------------------------------
-// Documents
-// ---------------------------------------------------------------------------
-
-const RETURN_REASONS = [
-  "Reported figures do not reconcile with the quarterly KPI submissions.",
-  "Missing supporting evidence for claimed achievements.",
-  "Executive authority sign-off page is missing.",
-  "Variance explanations required for underperforming targets.",
+const VARIANCE_REASONS = [
+  "Delayed by a supply-chain procurement backlog.",
+  "A vacancy in a key project role slowed delivery.",
+  "The funding tranche was received later than planned.",
+  "Stakeholder consultation took longer than scoped.",
+  "Severe weather disrupted planned activities.",
+];
+const CORRECTIVE_ACTIONS = [
+  "Fast-track procurement and appoint an implementing partner.",
+  "Fill the vacant post and reallocate delivery to the regional team.",
+  "Re-phase remaining activities into Q3 and Q4.",
+  "Escalate to the accounting authority for a recovery plan.",
 ];
 
-/**
- * Seeded documents are plain-text stand-ins for real PDFs/Word/Excel files —
- * honest placeholders rather than hand-rolled fake binary formats. The live
- * upload flow (Phase 3 UI) supports real files of those types; this just
- * gives the document repository realistic history to browse and review.
- */
-function docBodyText(params: { title: string; entityName: string; typeLabel: string; fyLabel: string; quarter?: Quarter }) {
+// ---------------------------------------------------------------------------
+// Story controls: a few entities get a fixed narrative so the demo is repeatable.
+// ---------------------------------------------------------------------------
+
+type Outcome = "ON_TIME" | "LATE" | "RETURNED" | "RETURNED_THEN_FIXED" | "MISSING";
+const FORCED_CURRENT_FY_OUTCOMES: Record<string, Partial<Record<string, Outcome>>> = {
+  // Healthy entity: everything in on time.
+  "national-sports-excellence-agency": { "QUARTERLY_PERFORMANCE|Q1": "ON_TIME", "QUARTERLY_FINANCIAL|Q1": "ON_TIME", "GOVERNANCE_RETURN|Q1": "ON_TIME" },
+  // Critical entity: performance report returned, financial report and governance return never submitted.
+  "frontier-history-museum-trust": { "QUARTERLY_PERFORMANCE|Q1": "RETURNED", "QUARTERLY_FINANCIAL|Q1": "MISSING", "GOVERNANCE_RETURN|Q1": "MISSING" },
+  // Watch NPO: financial report returned, performance report submitted late.
+  "youth-cultural-development-fund": { "QUARTERLY_PERFORMANCE|Q1": "LATE", "QUARTERLY_FINANCIAL|Q1": "RETURNED", "GOVERNANCE_RETURN|Q1": "ON_TIME" },
+};
+
+const PROFILE_PARAMS: Record<RiskProfile, { achievement: [number, number]; spendRate: [number, number]; outcomes: { value: Outcome; weight: number }[] }> = {
+  healthy: {
+    achievement: [0.94, 1.12],
+    spendRate: [0.92, 1.0],
+    outcomes: [
+      { value: "ON_TIME", weight: 92 },
+      { value: "LATE", weight: 8 },
+    ],
+  },
+  watch: {
+    achievement: [0.78, 1.0],
+    spendRate: [0.76, 0.92],
+    outcomes: [
+      { value: "ON_TIME", weight: 55 },
+      { value: "LATE", weight: 20 },
+      { value: "RETURNED_THEN_FIXED", weight: 15 },
+      { value: "RETURNED", weight: 10 },
+    ],
+  },
+  critical: {
+    achievement: [0.4, 0.9],
+    spendRate: [0.5, 0.78],
+    outcomes: [
+      { value: "ON_TIME", weight: 15 },
+      { value: "LATE", weight: 30 },
+      { value: "RETURNED", weight: 20 },
+      { value: "RETURNED_THEN_FIXED", weight: 10 },
+      { value: "MISSING", weight: 25 },
+    ],
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const uuid = () => crypto.randomUUID();
+const between = (range: [number, number]) => faker.number.float({ min: range[0], max: range[1] });
+
+function docBodyText(params: { title: string; entityName: string; typeLabel: string; fyLabel: string }) {
   return [
     params.title,
     `Entity: ${params.entityName}`,
     `Document type: ${params.typeLabel}`,
-    `Financial year: ${params.fyLabel}${params.quarter && params.quarter !== "ANNUAL" ? ` — ${params.quarter}` : ""}`,
+    `Financial year: ${params.fyLabel}`,
     "",
     "This is a synthetic placeholder document generated for the GovTech Hackathon 2026 demo of the",
-    "DSAC Public Entities Performance & Reporting Platform. In production this slot holds the entity's",
-    "actual submission (PDF, Word or Excel) rather than this plain-text stand-in.",
+    "DSAC Public Entity & NPO Reporting and Oversight Platform. In production this slot holds the entity's",
+    "actual evidence (PDF, Word or Excel) rather than this plain-text stand-in.",
     "",
     "— Demo, synthetic data only.",
   ].join("\n");
@@ -176,87 +273,84 @@ async function uploadWithRetry(key: string, body: Buffer, contentType: string, a
   }
 }
 
-interface VersionOutcome {
-  status: ReviewStatus;
-  reviewerId?: string;
-  comment?: string;
-}
-
-/** Weighted, risk-profile-aware review history — 1 version normally, 2 when a return-then-fix story fits. */
-function reviewOutcomes(riskProfile: RiskProfile, isCurrent: boolean, dsacReviewerIds: string[]): VersionOutcome[] {
-  const reviewer = () => faker.helpers.arrayElement(dsacReviewerIds);
-  const returned = () => ({ status: "RETURNED" as ReviewStatus, reviewerId: reviewer(), comment: faker.helpers.arrayElement(RETURN_REASONS) });
-  const roll = faker.number.float({ min: 0, max: 1 });
-
-  if (riskProfile === "healthy") {
-    if (isCurrent) return roll < 0.6 ? [{ status: "APPROVED", reviewerId: reviewer() }] : [{ status: "UNDER_REVIEW", reviewerId: reviewer() }];
-    return [{ status: "APPROVED", reviewerId: reviewer() }];
-  }
-
-  if (riskProfile === "watch") {
-    if (isCurrent) {
-      if (roll < 0.4) return [{ status: "RECEIVED" }];
-      if (roll < 0.75) return [{ status: "UNDER_REVIEW", reviewerId: reviewer() }];
-      return [returned()];
-    }
-    if (roll < 0.55) return [{ status: "APPROVED", reviewerId: reviewer() }];
-    return [returned(), { status: "APPROVED", reviewerId: reviewer() }];
-  }
-
-  // critical
-  if (isCurrent) {
-    if (roll < 0.3) return [{ status: "RECEIVED" }];
-    if (roll < 0.6) return [{ status: "UNDER_REVIEW", reviewerId: reviewer() }];
-    return [returned()];
-  }
-  if (roll < 0.5) return [returned()];
-  return [returned(), { status: "APPROVED", reviewerId: reviewer() }];
-}
-
-async function seedDocument(params: {
+interface EvidenceDoc {
   entityId: string;
+  entityName: string;
   type: DocumentType;
   title: string;
-  reportingPeriodId: string;
+  fyLabel: string;
   authorId: string;
-  bodyText: string;
-  versions: VersionOutcome[];
-  dueDate: Date;
-}) {
+  createdAt: Date;
+  reviewStatus: ReviewStatus;
+  reviewerId?: string;
+  reviewComment?: string;
+  links?: { reportingPeriodId?: string; kpiId?: string; budgetLineId?: string; reportId?: string };
+}
+
+async function seedEvidenceDocument(doc: EvidenceDoc) {
   const document = await prisma.document.create({
-    data: { entityId: params.entityId, type: params.type, title: params.title, reportingPeriodId: params.reportingPeriodId },
+    data: {
+      entityId: doc.entityId,
+      type: doc.type,
+      title: doc.title,
+      reportingPeriodId: doc.links?.reportingPeriodId,
+      kpiId: doc.links?.kpiId,
+      budgetLineId: doc.links?.budgetLineId,
+      reportId: doc.links?.reportId,
+      createdAt: doc.createdAt,
+    },
   });
+  const content = Buffer.from(docBodyText({ title: doc.title, entityName: doc.entityName, typeLabel: doc.type, fyLabel: doc.fyLabel }), "utf-8");
+  const checksum = crypto.createHash("sha256").update(content).digest("hex");
+  const storageKey = `entities/${doc.entityId}/documents/${document.id}/v1-${doc.type.toLowerCase()}.txt`;
+  await uploadWithRetry(storageKey, content, "text/plain");
+  await prisma.documentVersion.create({
+    data: {
+      documentId: document.id,
+      versionNumber: 1,
+      storageKey,
+      checksum,
+      fileSize: content.byteLength,
+      mimeType: "text/plain",
+      authorId: doc.authorId,
+      reviewStatus: doc.reviewStatus,
+      reviewedById: doc.reviewerId,
+      reviewedAt: doc.reviewerId ? addDays(doc.createdAt, 2) : undefined,
+      reviewComment: doc.reviewComment,
+      createdAt: doc.createdAt,
+    },
+  });
+}
 
-  for (let i = 0; i < params.versions.length; i++) {
-    const outcome = params.versions[i];
-    const versionNumber = i + 1;
-    const content = Buffer.from(`${params.bodyText}\n\nVersion ${versionNumber} of ${params.versions.length}.`, "utf-8");
-    const checksum = crypto.createHash("sha256").update(content).digest("hex");
-    const storageKey = `entities/${params.entityId}/documents/${document.id}/v${versionNumber}-${params.type.toLowerCase()}.txt`;
-    await uploadWithRetry(storageKey, content, "text/plain");
+function budgetLinesFor(annualBudget: number): Record<ExpenseCategory, number> {
+  const jittered = EXPENSE_CATEGORIES.map((c) => BASE_BUDGET_SHARE[c] * faker.number.float({ min: 0.8, max: 1.2 }));
+  const total = jittered.reduce((a, b) => a + b, 0);
+  const unit = annualBudget >= 100_000_000 ? 10_000 : 1_000;
+  const amounts = {} as Record<ExpenseCategory, number>;
+  let allocated = 0;
+  EXPENSE_CATEGORIES.forEach((category, i) => {
+    const isLast = i === EXPENSE_CATEGORIES.length - 1;
+    const amount = isLast ? annualBudget - allocated : Math.round(((annualBudget * jittered[i]) / total) / unit) * unit;
+    amounts[category] = amount;
+    allocated += amount;
+  });
+  return amounts;
+}
 
-    const createdAt = new Date(params.dueDate);
-    createdAt.setDate(createdAt.getDate() + i * 3);
+function pickOutcome(profile: RiskProfile, isPastFy: boolean): Outcome {
+  const outcome = faker.helpers.weightedArrayElement(PROFILE_PARAMS[profile].outcomes);
+  // A year on, an unresolved "returned" report or a still-missing one is rare and heavily
+  // weighted towards being fixed; keep a small tail so history still shows some lapses.
+  if (isPastFy && outcome === "RETURNED") return faker.number.float({ min: 0, max: 1 }) < 0.3 ? "RETURNED" : "RETURNED_THEN_FIXED";
+  if (isPastFy && outcome === "MISSING") return faker.number.float({ min: 0, max: 1 }) < 0.3 ? "MISSING" : "LATE";
+  return outcome;
+}
 
-    await prisma.documentVersion.create({
-      data: {
-        documentId: document.id,
-        versionNumber,
-        storageKey,
-        checksum,
-        fileSize: content.byteLength,
-        mimeType: "text/plain",
-        authorId: params.authorId,
-        changeNote: versionNumber > 1 ? "Resubmission addressing DSAC feedback." : undefined,
-        reviewStatus: outcome.status,
-        reviewedById: outcome.reviewerId,
-        reviewedAt: outcome.reviewerId ? createdAt : undefined,
-        reviewComment: outcome.comment,
-        createdAt,
-      },
-    });
-  }
-  return document;
+function deliveredStatus(submittedAt: Date, isPastFy: boolean): ReportStatus {
+  if (isPastFy) return "FINALISED";
+  const age = daysBetween(submittedAt, NOW);
+  if (age < 30) return faker.helpers.weightedArrayElement<ReportStatus>([{ value: "SUBMITTED", weight: 3 }, { value: "UNDER_REVIEW", weight: 4 }, { value: "ACCEPTED", weight: 3 }]);
+  return faker.helpers.weightedArrayElement<ReportStatus>([{ value: "ACCEPTED", weight: 4 }, { value: "FINALISED", weight: 6 }]);
 }
 
 // ---------------------------------------------------------------------------
@@ -264,12 +358,12 @@ async function seedDocument(params: {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  console.log(`Seeding as of ${NOW.toISOString().slice(0, 10)}...`);
   console.log("Clearing existing data...");
   await prisma.$transaction([
     prisma.auditLog.deleteMany(),
     prisma.riskScore.deleteMany(),
     prisma.notification.deleteMany(),
-    prisma.deadline.deleteMany(),
     prisma.comment.deleteMany(),
     prisma.task.deleteMany(),
     prisma.documentVersion.deleteMany(),
@@ -277,579 +371,468 @@ async function main() {
     prisma.workforceStat.deleteMany(),
     prisma.jobCreation.deleteMany(),
     prisma.auditFinding.deleteMany(),
-    prisma.expenditure.deleteMany(),
-    prisma.fundAllocation.deleteMany(),
+    prisma.quarterlyExpenditure.deleteMany(),
+    prisma.budgetLine.deleteMany(),
+    prisma.disbursement.deleteMany(),
     prisma.performanceReport.deleteMany(),
     prisma.kpiMilestone.deleteMany(),
     prisma.kpi.deleteMany(),
+    prisma.supportRequest.deleteMany(),
+    prisma.report.deleteMany(),
     prisma.reportingPeriod.deleteMany(),
     prisma.financialYear.deleteMany(),
     prisma.user.deleteMany(),
     prisma.entity.deleteMany(),
   ]);
 
+  // --- Financial years and the standard reporting calendar -----------------
   console.log("Creating financial years and reporting periods...");
-  const financialYears = new Map<string, { id: string; startDate: Date; endDate: Date }>();
-  const reportingPeriods = new Map<string, { id: string; quarter: Quarter; dueDate: Date; endDate: Date }[]>();
-  // Year-level documents (Strategic Plan, APP, Annual Report, Financials) anchor to this
-  // rather than a specific quarter's ReportingPeriod.
-  const annualPeriods = new Map<string, { id: string; dueDate: Date }>();
-
+  const fyRecords = new Map<string, { id: string; startDate: Date; endDate: Date; isPast: boolean; label: string; periods: Record<Quarter, { id: string; dueDate: Date }> }>();
   for (const fy of FINANCIAL_YEARS) {
-    const created = await prisma.financialYear.create({
-      data: { label: fy.label, startDate: fy.startDate, endDate: fy.endDate },
-    });
-    financialYears.set(fy.label, { id: created.id, startDate: fy.startDate, endDate: fy.endDate });
-
-    const periods: { id: string; quarter: Quarter; dueDate: Date; endDate: Date }[] = [];
+    const created = await prisma.financialYear.create({ data: { label: fy.label, startDate: fy.startDate, endDate: fy.endDate } });
+    const periods = {} as Record<Quarter, { id: string; dueDate: Date }>;
     for (const quarter of QUARTERS) {
-      const { start, end, dueDate } = quarterDates(fy.startDate, quarter);
-      const period = await prisma.reportingPeriod.create({
-        data: {
-          financialYearId: created.id,
-          quarter,
-          startDate: start,
-          endDate: end,
-          dueDate,
-        },
-      });
-      periods.push({ id: period.id, quarter, dueDate, endDate: end });
+      const { start, end } = quarterBounds(fy.startDate, quarter);
+      const dueDate = quarterlyReportDueDate("QUARTERLY_PERFORMANCE", fy.startDate, quarter);
+      const period = await prisma.reportingPeriod.create({ data: { financialYearId: created.id, quarter, startDate: start, endDate: end, dueDate } });
+      periods[quarter] = { id: period.id, dueDate };
     }
-    reportingPeriods.set(fy.label, periods);
-
-    // PFMA-style annual report tabling deadline: ~5 months after year-end.
-    const annualDueDate = new Date(fy.endDate);
-    annualDueDate.setMonth(annualDueDate.getMonth() + 5);
-    const annualPeriod = await prisma.reportingPeriod.create({
-      data: {
-        financialYearId: created.id,
-        quarter: "ANNUAL",
-        startDate: fy.startDate,
-        endDate: fy.endDate,
-        dueDate: annualDueDate,
-      },
-    });
-    annualPeriods.set(fy.label, { id: annualPeriod.id, dueDate: annualDueDate });
+    const annualDue = annualReportDueDate(fy.endDate);
+    const annual = await prisma.reportingPeriod.create({ data: { financialYearId: created.id, quarter: "ANNUAL", startDate: fy.startDate, endDate: fy.endDate, dueDate: annualDue } });
+    periods.ANNUAL = { id: annual.id, dueDate: annualDue };
+    fyRecords.set(fy.label, { id: created.id, startDate: fy.startDate, endDate: fy.endDate, isPast: fy.endDate < NOW, label: fy.label, periods });
   }
+  const currentFyLabel = FINANCIAL_YEARS.find((fy) => fy.startDate <= NOW && NOW <= addDays(fy.endDate, 1))?.label ?? FINANCIAL_YEARS.at(-1)!.label;
 
-  console.log("Creating deadlines...");
-  // Global (entityId: null) — the same calendar applies to every entity. The
-  // early-warning engine cross-references these against each entity's
-  // Document submissions to know who still owes what.
-  for (const fy of FINANCIAL_YEARS) {
-    const periods = reportingPeriods.get(fy.label)!;
-    for (const period of periods) {
-      await prisma.deadline.create({
-        data: {
-          reportingPeriodId: period.id,
-          title: `Quarterly Performance Report ${period.quarter} FY ${fy.label}`,
-          description: `Quarterly performance report for ${period.quarter}, financial year ${fy.label}.`,
-          category: "QUARTERLY_REPORT",
-          dueDate: period.dueDate,
-        },
-      });
-    }
-    const annual = annualPeriods.get(fy.label)!;
-    await prisma.deadline.create({
-      data: {
-        reportingPeriodId: annual.id,
-        title: `Annual Report FY ${fy.label}`,
-        description: `Annual report tabling deadline for financial year ${fy.label}.`,
-        category: "ANNUAL_REPORT",
-        dueDate: annual.dueDate,
-      },
-    });
-  }
-
+  // --- Entities (with organisational profile) ------------------------------
   console.log("Creating entities...");
-  const entityRecords = new Map<string, { id: string; riskProfile: RiskProfile; sector: EntitySector }>();
+  const entityRecords = new Map<string, { id: string; seed: EntitySeed }>();
   for (const seed of ENTITY_SEEDS) {
+    const domain = `${seed.slug.replace(/-/g, "")}.demo.org`;
+    const isNpo = seed.type === "NPO";
     const entity = await prisma.entity.create({
       data: {
         name: seed.name,
         type: seed.type,
         sector: seed.sector,
         description: seed.description,
-        fundingAllocation: seed.fundingAllocation,
+        registrationNumber: isNpo ? `${faker.number.int({ min: 100, max: 999 })}-${faker.number.int({ min: 100, max: 999 })} NPO` : `PE/${faker.number.int({ min: 1994, max: 2016 })}/${faker.number.int({ min: 1, max: 99 }).toString().padStart(4, "0")}`,
+        establishedYear: faker.number.int({ min: 1994, max: 2018 }),
+        province: faker.helpers.arrayElement(PROVINCES),
+        physicalAddress: `${faker.location.streetAddress()}, ${faker.location.city()}`,
+        contactPerson: faker.person.fullName(),
+        contactEmail: `info@${domain}`,
+        contactPhone: `+27 ${faker.number.int({ min: 10, max: 21 })} 555 ${faker.number.int({ min: 100, max: 999 }).toString().padStart(4, "0")}`.slice(0, 20),
+        website: `https://www.${domain}`,
+        accountingAuthority: isNpo ? "Chairperson of the Board of Trustees" : "Chief Executive Officer (Accounting Authority)",
+        mandate: `${seed.description} Funded and overseen by the Department of Sport, Arts and Culture.`,
       },
     });
-    entityRecords.set(seed.slug, { id: entity.id, riskProfile: seed.riskProfile, sector: seed.sector });
+    entityRecords.set(seed.slug, { id: entity.id, seed });
   }
 
+  // --- Users ------------------------------------------------------------------
   console.log("Creating users...");
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 10);
-  const usersByEntity = new Map<string, string[]>(); // entityId -> userIds
+  const usersByEntity = new Map<string, string[]>();
   const dsacReviewerIds: string[] = [];
-
   for (const demoUser of DEMO_USERS) {
     const entityId = demoUser.entitySlug ? entityRecords.get(demoUser.entitySlug)?.id : undefined;
     const user = await prisma.user.create({
-      data: {
-        name: demoUser.name,
-        email: demoUser.email,
-        hashedPassword: passwordHash,
-        role: demoUser.role,
-        entityId,
-        isDemoUser: true,
-      },
+      data: { name: demoUser.name, email: demoUser.email, hashedPassword: passwordHash, role: demoUser.role, entityId, isDemoUser: true },
     });
-    if (entityId) {
-      usersByEntity.set(entityId, [...(usersByEntity.get(entityId) ?? []), user.id]);
-    }
-    if (demoUser.role === "DSAC_ADMIN" || demoUser.role === "DSAC_ANALYST") {
-      dsacReviewerIds.push(user.id);
-    }
+    if (entityId) usersByEntity.set(entityId, [...(usersByEntity.get(entityId) ?? []), user.id]);
+    if (demoUser.role === "DSAC_ADMIN" || demoUser.role === "DSAC_ANALYST") dsacReviewerIds.push(user.id);
   }
-
-  // Ensure every entity has at least one admin + one contributor for task/comment assignment.
   for (const [slug, { id: entityId }] of entityRecords) {
     if ((usersByEntity.get(entityId) ?? []).length >= 2) continue;
     const domain = `${slug.replace(/-/g, "")}.demo.org`;
     const admin = await prisma.user.create({
-      data: {
-        name: faker.person.fullName(),
-        email: `admin.${slug}@${domain}`.slice(0, 254),
-        hashedPassword: passwordHash,
-        role: "ENTITY_ADMIN",
-        entityId,
-        isDemoUser: true,
-      },
+      data: { name: faker.person.fullName(), email: `admin.${slug}@${domain}`.slice(0, 254), hashedPassword: passwordHash, role: "ENTITY_ADMIN", entityId, isDemoUser: true },
     });
     const contributor = await prisma.user.create({
-      data: {
-        name: faker.person.fullName(),
-        email: `contributor.${slug}@${domain}`.slice(0, 254),
-        hashedPassword: passwordHash,
-        role: "ENTITY_CONTRIBUTOR",
-        entityId,
-        isDemoUser: true,
-      },
+      data: { name: faker.person.fullName(), email: `contributor.${slug}@${domain}`.slice(0, 254), hashedPassword: passwordHash, role: "ENTITY_CONTRIBUTOR", entityId, isDemoUser: true },
     });
     usersByEntity.set(entityId, [...(usersByEntity.get(entityId) ?? []), admin.id, contributor.id]);
   }
 
-  console.log("Creating KPIs, milestones, performance reports, finance, audit and workforce data...");
+  // --- Per-entity: KPIs, finance, reports, evidence -------------------------
+  console.log("Creating KPIs, budgets, disbursements, expenditure, reports and evidence...");
+  const notificationRows: Prisma.NotificationCreateManyInput[] = [];
+  const entityUsers = await prisma.user.findMany({ select: { id: true, entityId: true, role: true } });
 
-  for (const seed of ENTITY_SEEDS) {
-    const entity = entityRecords.get(seed.slug)!;
-    const kpiTemplates = [
-      ...pickN(GENERIC_KPI_POOL, faker.number.int({ min: 4, max: 6 })),
-      ...pickN(SECTOR_KPI_POOL[seed.sector], faker.number.int({ min: 4, max: 7 })),
-    ];
+  for (const { id: entityId, seed } of entityRecords.values()) {
+    const profile = seed.riskProfile;
+    const params = PROFILE_PARAMS[profile];
+    const authorIds = usersByEntity.get(entityId) ?? [];
+    const author = () => faker.helpers.arrayElement(authorIds);
+    const reviewer = () => faker.helpers.arrayElement(dsacReviewerIds);
 
-    for (const template of kpiTemplates) {
-      const isPercent = template.unit === "%";
-      const baseline = isPercent
-        ? faker.number.int({ min: 50, max: 75 })
-        : faker.number.int({ min: 20, max: 200 });
-      const annualTarget = isPercent
-        ? faker.number.int({ min: 85, max: 100 })
-        : Math.round(baseline * faker.number.float({ min: 1.1, max: 1.4 }));
+    const pool = [...faker.helpers.shuffle(GENERIC_KPI_POOL).slice(0, faker.number.int({ min: 3, max: 4 })), ...faker.helpers.shuffle(SECTOR_KPI_POOL[seed.sector] ?? []).slice(0, faker.number.int({ min: 3, max: 5 }))];
+    // Per-KPI target scale and delivery quality stay the same across years so the year-on-year story is coherent.
+    const kpiPlans = pool.map((template) => {
+      const isRate = template.unit === "%" || template.unit === "score";
+      const annualTarget = isRate
+        ? template.unit === "%" ? faker.number.int({ min: 85, max: 100 }) : faker.number.int({ min: 70, max: 90 })
+        : BIG_COUNT_UNITS.has(template.unit) ? round100(faker.number.int({ min: 1500, max: 25000 })) : faker.number.int({ min: 8, max: 120 });
+      return { template, isRate, aggregation: (isRate ? "LATEST" : "SUM") as KpiAggregation, baseTarget: annualTarget, quality: between(params.achievement) };
+    });
 
-      for (const fy of FINANCIAL_YEARS) {
-        const fyRecord = financialYears.get(fy.label)!;
-        const periods = reportingPeriods.get(fy.label)!;
-        const isCurrentYear = fy.label === "2026/27";
+    // Financial years, oldest first.
+    for (const fy of FINANCIAL_YEARS) {
+      const fyRec = fyRecords.get(fy.label)!;
+      const isCurrent = fy.label === currentFyLabel;
+      const isPast = fyRec.isPast;
+      const annualBudget = round100(seed.annualBudget * fy.budgetFactor);
 
-        const kpi = await prisma.kpi.create({
-          data: {
-            entityId: entity.id,
-            financialYearId: fyRecord.id,
-            name: template.name,
-            category: template.category,
-            unit: template.unit,
-            baseline,
-            annualTarget,
-            status: "NOT_STARTED",
-          },
+      // ---- Budget lines ----
+      const lineAmounts = budgetLinesFor(annualBudget);
+      const budgetLines = EXPENSE_CATEGORIES.map((category) => ({ id: uuid(), category, annualBudget: lineAmounts[category] }));
+      await prisma.budgetLine.createMany({ data: budgetLines.map((l) => ({ id: l.id, entityId, financialYearId: fyRec.id, category: l.category, annualBudget: l.annualBudget })) });
+
+      // ---- Disbursements (25% tranches at the start of each quarter) ----
+      const trancheAmount = round100(annualBudget * 0.25);
+      const disbursements: { tranche: number; amount: number; at: Date }[] = [];
+      for (let t = 0; t < 4; t++) {
+        const at = new Date(Date.UTC(fy.startDate.getUTCFullYear(), fy.startDate.getUTCMonth() + t * 3, 1));
+        if (at > NOW) continue;
+        if (isCurrent && profile === "critical" && t === 1) continue; // DSAC is holding the second tranche back
+        disbursements.push({ tranche: t + 1, amount: t === 3 ? annualBudget - trancheAmount * 3 : trancheAmount, at });
+      }
+      await prisma.disbursement.createMany({ data: disbursements.map((d) => ({ entityId, financialYearId: fyRec.id, trancheNumber: d.tranche, amount: d.amount, disbursedAt: d.at })) });
+
+      // ---- KPIs, milestones ----
+      const growth = 1 + (FINANCIAL_YEARS.indexOf(fy) - 1) * 0.04;
+      const kpis = kpiPlans.map((plan) => {
+        const annualTarget = plan.isRate ? Math.min(100, Math.round(plan.baseTarget * (plan.template.unit === "%" ? 1 : growth))) : Math.max(4, Math.round(plan.baseTarget * growth));
+        const quarterTargets = plan.isRate
+          ? RATE_RAMP.map((ramp) => Math.round(annualTarget * ramp * 10) / 10)
+          : (() => {
+              const first = KPI_PHASING.slice(0, 3).map((p) => Math.round(annualTarget * p));
+              return [...first, annualTarget - first.reduce((a, b) => a + b, 0)];
+            })();
+        // Delivery quality drifts a little from year to year, so trends aren't flat.
+        return { id: uuid(), plan, annualTarget, quarterTargets, quality: plan.quality * faker.number.float({ min: 0.93, max: 1.07 }) };
+      });
+      await prisma.kpi.createMany({
+        data: kpis.map((k) => ({
+          id: k.id,
+          entityId,
+          financialYearId: fyRec.id,
+          programme: k.plan.template.programme,
+          objective: PROGRAMME_OBJECTIVES[k.plan.template.programme] ?? `Deliver on the ${k.plan.template.programme} mandate`,
+          name: k.plan.template.name,
+          unit: k.plan.template.unit,
+          aggregation: k.plan.aggregation,
+          annualTarget: k.annualTarget,
+        })),
+      });
+      await prisma.kpiMilestone.createMany({
+        data: kpis.flatMap((k) => QUARTERS.map((q, i) => ({ kpiId: k.id, reportingPeriodId: fyRec.periods[q].id, targetValue: k.quarterTargets[i] }))),
+      });
+
+      // ---- Reports (one row per required submission) + the data behind them ----
+      const forced = isCurrent ? FORCED_CURRENT_FY_OUTCOMES[seed.slug] ?? {} : {};
+      const reportRows: Prisma.ReportCreateManyInput[] = [];
+      const perfRows: Prisma.PerformanceReportCreateManyInput[] = [];
+      const expenditureRows: Prisma.QuarterlyExpenditureCreateManyInput[] = [];
+      const reportIdsByKey = new Map<string, { id: string; status: ReportStatus; reviewComment?: string; submittedAt: Date | null; reviewedAt: Date | null }>();
+
+      // Spend behaviour is set once per year so the run-rate is consistent across quarters.
+      const spendRate = between(params.spendRate);
+      const overspendCategory: ExpenseCategory | null = !isCurrent && profile !== "healthy" && faker.number.float({ min: 0, max: 1 }) < (profile === "critical" ? 0.6 : 0.3) ? "TRAVEL" : null;
+      const lineFactor = new Map(budgetLines.map((l) => [l.category, l.category === overspendCategory ? faker.number.float({ min: 1.1, max: 1.25 }) : faker.number.float({ min: 0.85, max: 1.12 })]));
+
+      const requiredReports: { kind: ReportKind; quarter: Quarter }[] = [
+        ...QUARTERS.flatMap((quarter) => (["QUARTERLY_PERFORMANCE", "QUARTERLY_FINANCIAL", "GOVERNANCE_RETURN"] as ReportKind[]).map((kind) => ({ kind, quarter }))),
+        { kind: "ANNUAL_REPORT" as ReportKind, quarter: "ANNUAL" as Quarter },
+      ];
+
+      for (const { kind, quarter } of requiredReports) {
+        const period = fyRec.periods[quarter];
+        const dueDate = kind === "ANNUAL_REPORT" ? annualReportDueDate(fy.endDate) : quarterlyReportDueDate(kind, fy.startDate, quarter as (typeof QUARTERS)[number]);
+        const title = reportTitle(kind, fy.label, quarter === "ANNUAL" ? undefined : (quarter as (typeof QUARTERS)[number]));
+        const reportId = uuid();
+        const daysSinceDue = daysBetween(dueDate, NOW);
+        const pastDue = daysSinceDue > 0;
+
+        let status: ReportStatus = "DRAFT";
+        let submittedAt: Date | null = null;
+        let reviewedAt: Date | null = null;
+        let finalisedAt: Date | null = null;
+        let reviewComment: string | undefined;
+        let reviewedById: string | undefined;
+
+        if (pastDue) {
+          let outcome: Outcome = forced[`${kind}|${quarter}`] ?? pickOutcome(profile, isPast);
+          if (outcome === "LATE" && daysSinceDue <= 3) outcome = "ON_TIME";
+          if (outcome !== "MISSING") {
+            const late = outcome === "LATE" || (outcome === "RETURNED_THEN_FIXED" && faker.number.float({ min: 0, max: 1 }) < 0.5);
+            const lateDays = late ? Math.min(faker.number.int({ min: 2, max: 25 }), Math.max(1, daysSinceDue - 1)) : -faker.number.int({ min: 1, max: 12 });
+            submittedAt = addDays(dueDate, lateDays);
+            if (submittedAt > addDays(NOW, -1)) submittedAt = addDays(NOW, -1);
+            const reviewAt = new Date(Math.min(addDays(submittedAt, faker.number.int({ min: 3, max: 10 })).getTime(), addDays(NOW, -1).getTime()));
+
+            if (outcome === "RETURNED") {
+              status = "RETURNED";
+              reviewedAt = reviewAt;
+              reviewedById = reviewer();
+              reviewComment = faker.helpers.arrayElement(RETURN_REASONS[kind]);
+            } else {
+              status = deliveredStatus(submittedAt, isPast);
+              if (status !== "SUBMITTED") reviewedById = reviewer();
+              if (status !== "SUBMITTED") reviewedAt = reviewAt;
+              if (status === "FINALISED") finalisedAt = new Date(Math.min(addDays(reviewAt, faker.number.int({ min: 2, max: 7 })).getTime(), addDays(NOW, -1).getTime()));
+              if (outcome === "RETURNED_THEN_FIXED") reviewComment = "Returned once for correction; resubmission accepted.";
+            }
+          }
+        }
+        reportRows.push({
+          id: reportId,
+          entityId,
+          financialYearId: fyRec.id,
+          reportingPeriodId: period.id,
+          kind,
+          title,
+          dueDate,
+          status,
+          submittedAt,
+          submittedById: submittedAt ? author() : null,
+          reviewedAt,
+          reviewedById: reviewedById ?? null,
+          reviewComment: reviewComment ?? null,
+          finalisedAt,
         });
+        reportIdsByKey.set(`${kind}|${quarter}`, { id: reportId, status, reviewComment, submittedAt, reviewedAt });
 
-        let lastStatus: KpiStatus = "NOT_STARTED";
-        let anyMissed = false;
-        let anyAchieved = false;
-        let periodsReported = 0;
+        // Structured data exists once the entity has captured it (i.e. the report has left DRAFT).
+        if (status !== "DRAFT" && submittedAt) {
+          if (kind === "QUARTERLY_PERFORMANCE") {
+            const qIndex = QUARTERS.indexOf(quarter as (typeof QUARTERS)[number]);
+            for (const k of kpis) {
+              const target = k.quarterTargets[qIndex];
+              const noise = faker.number.float({ min: 0.95, max: 1.05 });
+              const raw = target * k.quality * noise;
+              const actual = k.plan.isRate ? Math.min(100, Math.round(raw * 10) / 10) : Math.max(0, Math.round(raw));
+              const behind = actual < target * 0.85;
+              perfRows.push({
+                kpiId: k.id,
+                reportingPeriodId: period.id,
+                actualValue: actual,
+                varianceExplanation: behind ? faker.helpers.arrayElement(VARIANCE_REASONS) : null,
+                correctiveAction: behind ? faker.helpers.arrayElement(CORRECTIVE_ACTIONS) : null,
+                submittedById: author(),
+                submittedAt,
+              });
+            }
+          }
+          if (kind === "QUARTERLY_FINANCIAL") {
+            const qIndex = QUARTERS.indexOf(quarter as (typeof QUARTERS)[number]);
+            for (const line of budgetLines) {
+              const amount = Math.max(0, round100(line.annualBudget * spendRate * SPEND_PHASING[qIndex] * (lineFactor.get(line.category) ?? 1) * faker.number.float({ min: 0.93, max: 1.07 })));
+              expenditureRows.push({ budgetLineId: line.id, quarter: quarter as Quarter, amount, recordedAt: submittedAt });
+            }
+          }
+        }
+      }
 
-        for (let qIndex = 0; qIndex < periods.length; qIndex++) {
-          const period = periods[qIndex];
-          const cumulativeFraction = (qIndex + 1) / periods.length;
-          const milestoneTarget = round2(baseline + (annualTarget - baseline) * cumulativeFraction);
+      await prisma.report.createMany({ data: reportRows });
+      if (perfRows.length) await prisma.performanceReport.createMany({ data: perfRows });
+      if (expenditureRows.length) await prisma.quarterlyExpenditure.createMany({ data: expenditureRows });
 
-          await prisma.kpiMilestone.create({
-            data: { kpiId: kpi.id, reportingPeriodId: period.id, targetValue: milestoneTarget },
+      // ---- Notifications for reports DSAC has returned ----
+      for (const row of reportRows) {
+        if (row.status !== "RETURNED" || !isCurrent) continue;
+        for (const user of entityUsers.filter((u) => u.entityId === entityId && (u.role === "ENTITY_ADMIN" || u.role === "ENTITY_CONTRIBUTOR"))) {
+          notificationRows.push({
+            userId: user.id,
+            entityId,
+            channel: "IN_APP",
+            type: "REVIEW_RETURNED",
+            title: `DSAC has returned your report for correction: ${row.title}`,
+            body: row.reviewComment ?? "Please review DSAC's comments and resubmit.",
+            link: "/reports",
+            createdAt: row.reviewedAt ?? NOW,
           });
+        }
+      }
 
-          const periodIsDue = period.dueDate <= TODAY;
-          if (isCurrentYear && !periodIsDue) continue; // future period — nothing to report yet
+      // ---- Evidence documents ----
+      const evidenceFor = (kind: ReportKind, quarter: Quarter) => reportIdsByKey.get(`${kind}|${quarter}`);
+      const docStatusFor = (report: { status: ReportStatus; reviewComment?: string }): { reviewStatus: ReviewStatus; comment?: string } =>
+        report.status === "RETURNED" ? { reviewStatus: "RETURNED", comment: report.reviewComment } : report.status === "ACCEPTED" || report.status === "FINALISED" ? { reviewStatus: "APPROVED" } : report.status === "UNDER_REVIEW" ? { reviewStatus: "UNDER_REVIEW" } : { reviewStatus: "RECEIVED" };
 
-          // Chance a critical entity simply never submits for this period.
-          const skipSubmission = seed.riskProfile === "critical" && faker.number.float({ min: 0, max: 1 }) < 0.2;
-          if (skipSubmission) {
-            lastStatus = "DEADLINE_MISSED";
-            anyMissed = true;
-            continue;
-          }
+      // Quarter whose evidence we attach: the latest quarter that has been reported in this year.
+      const latestReportedQuarter = [...QUARTERS].reverse().find((q) => {
+        const r = evidenceFor("QUARTERLY_PERFORMANCE", q);
+        return r && r.status !== "DRAFT";
+      });
+      if (latestReportedQuarter && (isCurrent || fy.label === FINANCIAL_YEARS.at(-2)!.label)) {
+        const perf = evidenceFor("QUARTERLY_PERFORMANCE", latestReportedQuarter)!;
+        const fin = evidenceFor("QUARTERLY_FINANCIAL", latestReportedQuarter);
+        const perfDoc = docStatusFor(perf);
+        await seedEvidenceDocument({
+          entityId, entityName: seed.name, type: "QUARTERLY_REPORT", fyLabel: fy.label, authorId: author(),
+          title: `${latestReportedQuarter} FY ${fy.label} — programme delivery evidence pack`,
+          createdAt: perf.submittedAt ?? NOW, reviewStatus: perfDoc.reviewStatus, reviewComment: perfDoc.comment, reviewerId: perfDoc.reviewStatus === "RECEIVED" ? undefined : reviewer(),
+          links: { reportId: perf.id, reportingPeriodId: fyRec.periods[latestReportedQuarter].id },
+        });
+        // Evidence tied to one specific KPI, so the Performance tab's Evidence column has something to show.
+        const evidenceKpi = kpis.find((k) => !k.plan.isRate) ?? kpis[0];
+        await seedEvidenceDocument({
+          entityId, entityName: seed.name, type: "OTHER", fyLabel: fy.label, authorId: author(),
+          title: `${evidenceKpi.plan.template.name} — attendance registers and delivery records`,
+          createdAt: perf.submittedAt ?? NOW, reviewStatus: perfDoc.reviewStatus === "RETURNED" ? "RECEIVED" : perfDoc.reviewStatus,
+          reviewerId: perfDoc.reviewStatus === "APPROVED" ? reviewer() : undefined,
+          links: { kpiId: evidenceKpi.id, reportId: perf.id, reportingPeriodId: fyRec.periods[latestReportedQuarter].id },
+        });
+        if (fin && fin.status !== "DRAFT") {
+          const finDoc = docStatusFor(fin);
+          await seedEvidenceDocument({
+            entityId, entityName: seed.name, type: "FINANCIALS", fyLabel: fy.label, authorId: author(),
+            title: `${latestReportedQuarter} FY ${fy.label} — invoices and bank reconciliation`,
+            createdAt: fin.submittedAt ?? NOW, reviewStatus: finDoc.reviewStatus, reviewComment: finDoc.comment, reviewerId: finDoc.reviewStatus === "RECEIVED" ? undefined : reviewer(),
+            links: { reportId: fin.id, budgetLineId: budgetLines.find((l) => l.category === "PROGRAMME_COSTS")?.id, reportingPeriodId: fyRec.periods[latestReportedQuarter].id },
+          });
+        }
+      }
+      const annual = evidenceFor("ANNUAL_REPORT", "ANNUAL");
+      if (annual && annual.status !== "DRAFT") {
+        const annualDoc = docStatusFor(annual);
+        await seedEvidenceDocument({
+          entityId, entityName: seed.name, type: "ANNUAL_REPORT", fyLabel: fy.label, authorId: author(),
+          title: `Annual Report FY ${fy.label}`, createdAt: annual.submittedAt ?? NOW,
+          reviewStatus: annualDoc.reviewStatus, reviewComment: annualDoc.comment, reviewerId: annualDoc.reviewStatus === "RECEIVED" ? undefined : reviewer(),
+          links: { reportId: annual.id, reportingPeriodId: fyRec.periods.ANNUAL.id },
+        });
+      }
+      if (fy.label === FINANCIAL_YEARS[0].label) {
+        await seedEvidenceDocument({
+          entityId, entityName: seed.name, type: "STRATEGIC_PLAN", fyLabel: fy.label, authorId: author(),
+          title: `${seed.name} Strategic Plan 2024–2029`, createdAt: fy.startDate, reviewStatus: "APPROVED", reviewerId: reviewer(),
+        });
+      }
+      await seedEvidenceDocument({
+        entityId, entityName: seed.name, type: "APP", fyLabel: fy.label, authorId: author(),
+        title: `Annual Performance Plan FY ${fy.label}`, createdAt: fy.startDate, reviewStatus: "APPROVED", reviewerId: reviewer(),
+        links: { reportingPeriodId: fyRec.periods.ANNUAL.id },
+      });
 
-          const achievementRatio =
-            seed.riskProfile === "healthy"
-              ? faker.number.float({ min: 0.95, max: 1.12 })
-              : seed.riskProfile === "watch"
-                ? faker.number.float({ min: 0.68, max: 0.95 })
-                : faker.number.float({ min: 0.35, max: 0.72 });
-
-          const actualValue = round2(milestoneTarget * achievementRatio);
-
-          let status: KpiStatus;
-          if (achievementRatio >= 0.95) {
-            status = "ACHIEVED";
-            anyAchieved = true;
-          } else if (achievementRatio < 0.5 && periodIsDue) {
-            status = "DEADLINE_MISSED";
-            anyMissed = true;
-          } else {
-            status = "IN_PROGRESS";
-          }
-
-          const lateChance =
-            seed.riskProfile === "healthy" ? 0.03 : seed.riskProfile === "watch" ? 0.4 : 0.8;
-          const isLate = faker.number.float({ min: 0, max: 1 }) < lateChance;
-          const lateDays = isLate
-            ? faker.number.int({ min: 2, max: seed.riskProfile === "critical" ? 35 : 10 })
-            : -faker.number.int({ min: 1, max: 8 });
-          const submittedAt = new Date(period.dueDate);
-          submittedAt.setDate(submittedAt.getDate() + lateDays);
-
-          await prisma.performanceReport.create({
+      // ---- Audit findings (completed years only) ----
+      if (isPast) {
+        const findingCount = profile === "healthy" ? faker.number.int({ min: 0, max: 1 }) : profile === "watch" ? faker.number.int({ min: 1, max: 2 }) : faker.number.int({ min: 2, max: 3 });
+        const opinion: AuditOpinion =
+          profile === "healthy" ? faker.helpers.arrayElement<AuditOpinion>(["CLEAN", "CLEAN", "UNQUALIFIED_WITH_FINDINGS"]) : profile === "watch" ? faker.helpers.arrayElement<AuditOpinion>(["UNQUALIFIED_WITH_FINDINGS", "QUALIFIED"]) : faker.helpers.arrayElement<AuditOpinion>(["QUALIFIED", "ADVERSE", "DISCLAIMER"]);
+        for (let i = 0; i < findingCount; i++) {
+          const severity: AuditSeverity = profile === "healthy" ? "LOW" : profile === "watch" ? faker.helpers.arrayElement<AuditSeverity>(["LOW", "MEDIUM"]) : faker.helpers.arrayElement<AuditSeverity>(["MEDIUM", "HIGH", "CRITICAL"]);
+          const isResolved = profile === "healthy" || faker.number.float({ min: 0, max: 1 }) > 0.6;
+          await prisma.auditFinding.create({
             data: {
-              kpiId: kpi.id,
-              reportingPeriodId: period.id,
-              actualValue,
-              status,
-              varianceExplanation:
-                status === "DEADLINE_MISSED"
-                  ? faker.helpers.arrayElement([
-                      "Delayed due to supply chain procurement backlog.",
-                      "Vacancy in key project role slowed delivery.",
-                      "Funding tranche received later than planned.",
-                      "Underlying stakeholder consultation took longer than scoped.",
-                    ])
-                  : undefined,
-              submittedById: faker.helpers.arrayElement(usersByEntity.get(entity.id) ?? []),
-              submittedAt,
-              isLate,
+              entityId, financialYearId: fyRec.id,
+              category: faker.helpers.arrayElement(["Supply chain management", "Predetermined objectives", "Financial statements", "Compliance with laws and regulations", "IT governance"]),
+              severity, status: isResolved ? "RESOLVED" : faker.helpers.arrayElement(["OPEN", "IN_PROGRESS"]), auditorOpinion: opinion,
+              description: faker.helpers.arrayElement([
+                "Material misstatement identified in reported performance information.",
+                "Inadequate supporting documentation for reported achievements.",
+                "Non-compliance with supply chain management prescripts.",
+                "Weaknesses identified in IT general controls.",
+                "Irregular expenditure not adequately investigated.",
+              ]),
+              resolvedAt: isResolved ? fy.endDate : null,
             },
           });
-
-          lastStatus = status;
-          periodsReported++;
         }
-
-        const finalStatus: KpiStatus = periodsReported === 0 ? "NOT_STARTED" : anyMissed && !anyAchieved ? "DEADLINE_MISSED" : lastStatus;
-        await prisma.kpi.update({ where: { id: kpi.id }, data: { status: finalStatus } });
       }
-    }
 
-    // --- Finance: two tranches per financial year ---
-    for (const fy of FINANCIAL_YEARS) {
-      const fyRecord = financialYears.get(fy.label)!;
-      const isCurrentYear = fy.label === "2026/27";
-      const tranche1Amount = round2(seed.fundingAllocation * 0.6);
-      const tranche2Amount = round2(seed.fundingAllocation * 0.4);
-
-      const tranche1 = await prisma.fundAllocation.create({
-        data: {
-          entityId: entity.id,
-          financialYearId: fyRecord.id,
-          category: "Transfer payment",
-          trancheNumber: 1,
-          amountAllocated: tranche1Amount,
-          dateAllocated: fy.startDate,
-        },
-      });
-      const tranche2Date = new Date(fy.startDate);
-      tranche2Date.setMonth(tranche2Date.getMonth() + 6);
-      const tranche2 = await prisma.fundAllocation.create({
-        data: {
-          entityId: entity.id,
-          financialYearId: fyRecord.id,
-          category: "Transfer payment",
-          trancheNumber: 2,
-          amountAllocated: tranche2Amount,
-          dateAllocated: tranche2Date,
-        },
-      });
-
-      const utilisationRate = isCurrentYear
-        ? seed.riskProfile === "healthy"
-          ? faker.number.float({ min: 0.4, max: 0.55 })
-          : seed.riskProfile === "watch"
-            ? faker.number.float({ min: 0.2, max: 0.4 })
-            : faker.number.float({ min: 0.05, max: 0.2 })
-        : seed.riskProfile === "healthy"
-          ? faker.number.float({ min: 0.92, max: 1.0 })
-          : seed.riskProfile === "watch"
-            ? faker.number.float({ min: 0.75, max: 0.92 })
-            : faker.number.float({ min: 0.45, max: 0.75 });
-
-      const categories = ["Compensation of employees", "Programme delivery", "Goods and services", "Capital expenditure"];
-      const totalAllocated = tranche1Amount + tranche2Amount;
-      const totalSpend = round2(totalAllocated * utilisationRate);
-      let remaining = totalSpend;
-      for (let i = 0; i < categories.length; i++) {
-        const isLast = i === categories.length - 1;
-        const amount = isLast ? remaining : round2(totalSpend * faker.number.float({ min: 0.15, max: 0.35 }));
-        remaining -= amount;
-        if (amount <= 0) continue;
-        await prisma.expenditure.create({
-          data: {
-            fundAllocationId: faker.helpers.arrayElement([tranche1.id, tranche2.id]),
-            amountSpent: amount,
-            category: categories[i],
-            description: `${categories[i]} spend for FY ${fy.label}`,
-            recordedAt: fy.startDate,
-          },
-        });
-      }
-    }
-
-    // --- Audit findings (historical years only) ---
-    for (const fy of FINANCIAL_YEARS.filter((f) => f.label !== "2026/27")) {
-      const fyRecord = financialYears.get(fy.label)!;
-      const findingCount =
-        seed.riskProfile === "healthy" ? faker.number.int({ min: 0, max: 1 }) : seed.riskProfile === "watch" ? faker.number.int({ min: 1, max: 2 }) : faker.number.int({ min: 2, max: 3 });
-
-      const opinion: AuditOpinion =
-        seed.riskProfile === "healthy"
-          ? faker.helpers.arrayElement<AuditOpinion>(["CLEAN", "CLEAN", "UNQUALIFIED_WITH_FINDINGS"])
-          : seed.riskProfile === "watch"
-            ? faker.helpers.arrayElement<AuditOpinion>(["UNQUALIFIED_WITH_FINDINGS", "QUALIFIED"])
-            : faker.helpers.arrayElement<AuditOpinion>(["QUALIFIED", "ADVERSE", "DISCLAIMER"]);
-
-      for (let i = 0; i < findingCount; i++) {
-        const severity: AuditSeverity =
-          seed.riskProfile === "healthy"
-            ? "LOW"
-            : seed.riskProfile === "watch"
-              ? faker.helpers.arrayElement<AuditSeverity>(["LOW", "MEDIUM"])
-              : faker.helpers.arrayElement<AuditSeverity>(["MEDIUM", "HIGH", "CRITICAL"]);
-
-        const isResolved = seed.riskProfile === "healthy" || faker.number.float({ min: 0, max: 1 }) > 0.6;
-
-        await prisma.auditFinding.create({
-          data: {
-            entityId: entity.id,
-            financialYearId: fyRecord.id,
-            category: faker.helpers.arrayElement(["Supply chain management", "Predetermined objectives", "Financial statements", "Compliance with laws and regulations", "IT governance"]),
-            severity,
-            status: isResolved ? "RESOLVED" : faker.helpers.arrayElement(["OPEN", "IN_PROGRESS"]),
-            auditorOpinion: opinion,
-            description: faker.helpers.arrayElement([
-              "Material misstatement identified in reported performance information.",
-              "Inadequate supporting documentation for reported achievements.",
-              "Non-compliance with supply chain management prescripts.",
-              "Weaknesses identified in IT general controls.",
-              "Irregular expenditure not adequately investigated.",
-            ]),
-            resolvedAt: isResolved ? fy.endDate : null,
-          },
-        });
-      }
-    }
-
-    // --- Workforce stats (aggregated) ---
-    const genders: Gender[] = ["FEMALE", "MALE", "OTHER"];
-    const races: RaceCategory[] = ["AFRICAN", "COLOURED", "INDIAN", "WHITE", "OTHER"];
-    const ageBands: AgeBand[] = ["UNDER_25", "AGE_25_34", "AGE_35_44", "AGE_45_54", "AGE_55_PLUS"];
-    const disabilityStatuses: DisabilityStatus[] = ["WITHOUT_DISABILITY", "WITH_DISABILITY"];
-
-    for (const fy of FINANCIAL_YEARS) {
-      const fyRecord = financialYears.get(fy.label)!;
+      // ---- Workforce (aggregated) and jobs created ----
+      const genders: Gender[] = ["FEMALE", "MALE", "OTHER"];
+      const races: RaceCategory[] = ["AFRICAN", "COLOURED", "INDIAN", "WHITE", "OTHER"];
+      const ageBands: AgeBand[] = ["UNDER_25", "AGE_25_34", "AGE_35_44", "AGE_45_54", "AGE_55_PLUS"];
+      const disabilityStatuses: DisabilityStatus[] = ["WITHOUT_DISABILITY", "WITH_DISABILITY"];
       const combos = new Set<string>();
       const comboCount = faker.number.int({ min: 12, max: 18 });
       let attempts = 0;
       while (combos.size < comboCount && attempts < comboCount * 5) {
         attempts++;
-        const gender = faker.helpers.arrayElement(genders);
-        const race = faker.helpers.arrayElement(races);
-        const ageBand = faker.helpers.arrayElement(ageBands);
-        const disability = faker.helpers.weightedArrayElement([
-          { value: disabilityStatuses[0], weight: 9 },
-          { value: disabilityStatuses[1], weight: 1 },
-        ]);
-        combos.add(`${gender}|${race}|${ageBand}|${disability}`);
+        const disability = faker.helpers.weightedArrayElement([{ value: disabilityStatuses[0], weight: 9 }, { value: disabilityStatuses[1], weight: 1 }]);
+        combos.add(`${faker.helpers.arrayElement(genders)}|${faker.helpers.arrayElement(races)}|${faker.helpers.arrayElement(ageBands)}|${disability}`);
       }
-      for (const combo of combos) {
-        const [gender, race, ageBand, disability] = combo.split("|") as [Gender, RaceCategory, AgeBand, DisabilityStatus];
-        await prisma.workforceStat.create({
-          data: {
-            entityId: entity.id,
-            financialYearId: fyRecord.id,
-            gender,
-            raceCategory: race,
-            ageBand,
-            disabilityStatus: disability,
-            headcount: faker.number.int({ min: 1, max: 35 }),
-          },
-        });
-      }
-
-      const jobScale = seed.fundingAllocation / 50_000_000;
-      const jobMultiplier = seed.riskProfile === "healthy" ? 1 : seed.riskProfile === "watch" ? 0.7 : 0.4;
+      await prisma.workforceStat.createMany({
+        data: [...combos].map((combo) => {
+          const [gender, raceCategory, ageBand, disabilityStatus] = combo.split("|") as [Gender, RaceCategory, AgeBand, DisabilityStatus];
+          return { entityId, financialYearId: fyRec.id, gender, raceCategory, ageBand, disabilityStatus, headcount: faker.number.int({ min: 1, max: 35 }) };
+        }),
+      });
+      const jobScale = annualBudget / 50_000_000;
+      const jobMultiplier = profile === "healthy" ? 1 : profile === "watch" ? 0.7 : 0.4;
       await prisma.jobCreation.createMany({
         data: [
-          { entityId: entity.id, financialYearId: fyRecord.id, jobType: "PERMANENT", count: Math.max(1, Math.round(jobScale * 4 * jobMultiplier)) },
-          { entityId: entity.id, financialYearId: fyRecord.id, jobType: "TEMPORARY", count: Math.max(1, Math.round(jobScale * 12 * jobMultiplier)) },
-          { entityId: entity.id, financialYearId: fyRecord.id, jobType: "YOUTH", count: Math.max(1, Math.round(jobScale * 8 * jobMultiplier)) },
+          { entityId, financialYearId: fyRec.id, jobType: "PERMANENT", count: Math.max(1, Math.round(jobScale * 4 * jobMultiplier)) },
+          { entityId, financialYearId: fyRec.id, jobType: "TEMPORARY", count: Math.max(1, Math.round(jobScale * 12 * jobMultiplier)) },
+          { entityId, financialYearId: fyRec.id, jobType: "YOUTH", count: Math.max(1, Math.round(jobScale * 8 * jobMultiplier)) },
         ],
       });
     }
-
   }
+  if (notificationRows.length) await prisma.notification.createMany({ data: notificationRows });
 
-  console.log("Creating documents (strategic plans, APPs, annual & quarterly reports)...");
-  for (const seed of ENTITY_SEEDS) {
-    const entity = entityRecords.get(seed.slug)!;
-    const author = () => faker.helpers.arrayElement(usersByEntity.get(entity.id) ?? []);
-
-    const oldestFy = FINANCIAL_YEARS[0];
-    const oldestFyAnnual = annualPeriods.get(oldestFy.label)!;
-    await seedDocument({
-      entityId: entity.id,
-      type: "STRATEGIC_PLAN",
-      title: `${seed.name} Strategic Plan 2024–2029`,
-      reportingPeriodId: oldestFyAnnual.id,
-      authorId: author(),
-      bodyText: docBodyText({
-        title: `${seed.name} Strategic Plan 2024–2029`,
-        entityName: seed.name,
-        typeLabel: "Strategic Plan",
-        fyLabel: oldestFy.label,
-      }),
-      versions: [{ status: "APPROVED", reviewerId: faker.helpers.arrayElement(dsacReviewerIds) }],
-      dueDate: oldestFy.startDate,
-    });
-
-    for (const fy of FINANCIAL_YEARS) {
-      const isCurrent = fy.label === "2026/27";
-      const annual = annualPeriods.get(fy.label)!;
-      const title = `Annual Performance Plan FY ${fy.label}`;
-      await seedDocument({
-        entityId: entity.id,
-        type: "APP",
-        title,
-        reportingPeriodId: annual.id,
-        authorId: author(),
-        bodyText: docBodyText({ title, entityName: seed.name, typeLabel: "Annual Performance Plan", fyLabel: fy.label }),
-        versions: reviewOutcomes(seed.riskProfile, isCurrent, dsacReviewerIds),
-        dueDate: fy.startDate,
+  // --- Support requests -----------------------------------------------------
+  console.log("Creating support requests...");
+  const REQUEST_TEMPLATES: { title: string; category: RequestCategory; amount?: [number, number]; motivation: string; outcome: string }[] = [
+    { title: "Additional funding for facility repairs", category: "ADDITIONAL_FUNDING", amount: [400_000, 2_500_000], motivation: "Storm damage to the main venue exceeds what the approved maintenance line can absorb.", outcome: "Venue reopened to the public within one quarter." },
+    { title: "Mid-year budget adjustment for programme delivery", category: "BUDGET_REQUEST", amount: [250_000, 1_800_000], motivation: "Demand for funded programmes is above plan and current allocations will be exhausted by Q3.", outcome: "Programme targets for the year met in full." },
+    { title: "Technical support: performance-information systems", category: "TECHNICAL_SUPPORT", motivation: "We need help configuring a reliable process for capturing and evidencing quarterly KPI data.", outcome: "Audit-ready performance information from the next quarter." },
+    { title: "Governance assistance: board induction and policy review", category: "GOVERNANCE_ASSISTANCE", motivation: "Three new board members have been appointed and several policies are overdue for review.", outcome: "Updated governance framework approved by the board." },
+    { title: "Programme support for rural outreach", category: "PROGRAMME_SUPPORT", motivation: "Logistics and travel costs for rural delivery exceed our current capacity.", outcome: "Outreach expanded to additional districts." },
+    { title: "Capacity-building: financial management training", category: "CAPACITY_BUILDING", motivation: "Finance staff need training on the standard reporting templates and PFMA requirements.", outcome: "All finance staff certified and reporting errors reduced." },
+  ];
+  const REQUEST_STATUS_WEIGHTS: { value: RequestStatus; weight: number }[] = [
+    { value: "SUBMITTED", weight: 3 }, { value: "UNDER_REVIEW", weight: 3 }, { value: "APPROVED", weight: 2 },
+    { value: "DECLINED", weight: 1 }, { value: "MORE_INFO_REQUIRED", weight: 1 }, { value: "COMPLETED", weight: 2 },
+  ];
+  const currentFy = fyRecords.get(currentFyLabel)!;
+  for (const { id: entityId, seed } of entityRecords.values()) {
+    const authorIds = usersByEntity.get(entityId) ?? [];
+    const count = seed.slug === "frontier-history-museum-trust" ? 2 : faker.helpers.weightedArrayElement([{ value: 0, weight: 3 }, { value: 1, weight: 4 }, { value: 2, weight: 2 }, { value: 3, weight: 1 }]);
+    const programmes = await prisma.kpi.findMany({ where: { entityId, financialYearId: currentFy.id }, select: { programme: true }, distinct: ["programme"] });
+    for (const template of faker.helpers.shuffle(REQUEST_TEMPLATES).slice(0, count)) {
+      const status = faker.helpers.weightedArrayElement(REQUEST_STATUS_WEIGHTS);
+      const decided = status !== "SUBMITTED" && status !== "UNDER_REVIEW";
+      const createdAt = addDays(NOW, -faker.number.int({ min: 3, max: 60 }));
+      await prisma.supportRequest.create({
+        data: {
+          entityId, financialYearId: currentFy.id, title: template.title, category: template.category,
+          amountRequested: template.amount ? round100(faker.number.int({ min: template.amount[0], max: Math.max(template.amount[0], Math.min(template.amount[1], seed.annualBudget * 0.05)) })) : null,
+          motivation: template.motivation, expectedOutcome: template.outcome,
+          linkedProgramme: programmes.length ? faker.helpers.arrayElement(programmes).programme : null,
+          status, createdById: faker.helpers.arrayElement(authorIds), createdAt,
+          decidedById: decided ? faker.helpers.arrayElement(dsacReviewerIds) : null,
+          decidedAt: decided ? addDays(createdAt, faker.number.int({ min: 2, max: 14 })) : null,
+          decisionNote: status === "DECLINED" ? "Not affordable within the current allocation; please resubmit for the next budget cycle." : status === "MORE_INFO_REQUIRED" ? "Please provide quotations and a breakdown of the amount requested." : status === "APPROVED" || status === "COMPLETED" ? "Approved — funds and support will be arranged with your finance team." : null,
+        },
       });
-    }
-
-    for (const fy of FINANCIAL_YEARS.filter((f) => f.label !== "2026/27")) {
-      const annual = annualPeriods.get(fy.label)!;
-      const title = `Annual Report FY ${fy.label}`;
-      await seedDocument({
-        entityId: entity.id,
-        type: "ANNUAL_REPORT",
-        title,
-        reportingPeriodId: annual.id,
-        authorId: author(),
-        bodyText: docBodyText({ title, entityName: seed.name, typeLabel: "Annual Report", fyLabel: fy.label }),
-        versions: reviewOutcomes(seed.riskProfile, false, dsacReviewerIds),
-        dueDate: annual.dueDate,
-      });
-    }
-
-    for (const fy of FINANCIAL_YEARS) {
-      const isCurrentYear = fy.label === "2026/27";
-      const periods = reportingPeriods.get(fy.label)!;
-      for (const period of periods) {
-        if (period.dueDate > TODAY) continue;
-        const isMostRecentDue = isCurrentYear && period.quarter === "Q1";
-        if (seed.riskProfile === "critical" && isMostRecentDue && faker.number.float({ min: 0, max: 1 }) < 0.15) {
-          continue; // simulates a missed submission entirely
-        }
-        const title = `Quarterly Performance Report ${period.quarter} FY ${fy.label}`;
-        await seedDocument({
-          entityId: entity.id,
-          type: "QUARTERLY_REPORT",
-          title,
-          reportingPeriodId: period.id,
-          authorId: author(),
-          bodyText: docBodyText({
-            title,
-            entityName: seed.name,
-            typeLabel: "Quarterly Performance Report",
-            fyLabel: fy.label,
-            quarter: period.quarter,
-          }),
-          versions: reviewOutcomes(seed.riskProfile, isMostRecentDue, dsacReviewerIds),
-          dueDate: period.dueDate,
-        });
-      }
     }
   }
 
+  // --- Tasks and comments (parked features; kept so the data stays valid) ---
   console.log("Creating tasks and comments...");
-  const TASK_TEMPLATES: { title: string; direction: "INTERNAL" | "TO_DSAC" | "FROM_DSAC" }[] = [
-    { title: "Resubmit returned quarterly report", direction: "FROM_DSAC" },
-    { title: "Follow up on outstanding audit finding", direction: "FROM_DSAC" },
-    { title: "Request clarification on reported variance", direction: "TO_DSAC" },
-    { title: "Prepare board sign-off for annual report", direction: "INTERNAL" },
-    { title: "Compile evidence for KPI achievement", direction: "INTERNAL" },
-  ];
-  const COMMENT_TEMPLATES = [
-    "Uploaded the latest quarterly report — please review when you get a chance.",
-    "We're still waiting on sign-off from the finance team for this quarter's figures.",
-    "Thanks for the quick turnaround on the last review.",
-    "Flagging that our Q2 submission may be a few days late this cycle.",
-  ];
-
-  for (const seed of ENTITY_SEEDS) {
-    const entity = entityRecords.get(seed.slug)!;
-    const entityUserIds = usersByEntity.get(entity.id) ?? [];
+  for (const { id: entityId } of entityRecords.values()) {
+    const entityUserIds = usersByEntity.get(entityId) ?? [];
     if (entityUserIds.length === 0) continue;
-
-    const templates = pickN(TASK_TEMPLATES, faker.number.int({ min: 2, max: 4 }));
-    for (const template of templates) {
-      const assigneeId = template.direction === "TO_DSAC" ? faker.helpers.arrayElement(dsacReviewerIds) : faker.helpers.arrayElement(entityUserIds);
-      const assignerId = template.direction === "FROM_DSAC" ? faker.helpers.arrayElement(dsacReviewerIds) : faker.helpers.arrayElement(entityUserIds);
-      const status = faker.helpers.weightedArrayElement([
-        { value: "TODO" as const, weight: 4 },
-        { value: "IN_PROGRESS" as const, weight: 3 },
-        { value: "DONE" as const, weight: 2 },
-        { value: "BLOCKED" as const, weight: 1 },
-      ]);
-
-      await prisma.task.create({
-        data: {
-          entityId: entity.id,
-          title: template.title,
-          assigneeId,
-          assignerId,
-          direction: template.direction,
-          status,
-          dueDate: faker.date.soon({ days: 30, refDate: TODAY }),
-        },
-      });
-    }
-
-    if (faker.number.float({ min: 0, max: 1 }) < 0.4) {
-      await prisma.comment.create({
-        data: {
-          entityId: entity.id,
-          authorId: faker.helpers.arrayElement(entityUserIds),
-          body: faker.helpers.arrayElement(COMMENT_TEMPLATES),
-          mentionedUserIds: [],
-        },
-      });
-    }
+    await prisma.task.create({
+      data: {
+        entityId, title: "Resubmit returned quarterly report", assigneeId: faker.helpers.arrayElement(entityUserIds), assignerId: faker.helpers.arrayElement(dsacReviewerIds),
+        direction: "FROM_DSAC", status: "TODO", dueDate: addDays(NOW, faker.number.int({ min: 5, max: 30 })),
+      },
+    });
   }
 
   console.log("Computing initial risk scores (weighted model + trained logistic regression)...");
   const riskScoreCount = await recalculateAllRiskScores();
 
+  const [reports, kpis, lines, expenditures] = await Promise.all([prisma.report.count(), prisma.kpi.count(), prisma.budgetLine.count(), prisma.quarterlyExpenditure.count()]);
   console.log(
-    `Seed complete: ${ENTITY_SEEDS.length} entities, ${DEMO_USERS.length} demo users (+ auto-generated), ${riskScoreCount} risk scores computed.`,
+    `Seed complete: ${ENTITY_SEEDS.length} entities, ${DEMO_USERS.length} demo users (+ auto-generated), ${kpis} KPIs, ${lines} budget lines, ${expenditures} expenditure entries, ${reports} reports, ${riskScoreCount} risk scores.`,
   );
 }
 

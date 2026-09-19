@@ -1,24 +1,51 @@
 import type { Role } from "@prisma/client";
 import type { LucideIcon } from "lucide-react";
-import { LayoutDashboardIcon, Building2Icon, FileTextIcon, KanbanIcon, AlertTriangleIcon, ShieldIcon } from "lucide-react";
+import {
+  LayoutDashboardIcon,
+  Building2Icon,
+  FileTextIcon,
+  LifeBuoyIcon,
+  BellRingIcon,
+  SettingsIcon,
+  TargetIcon,
+  WalletIcon,
+  ClipboardCheckIcon,
+  FolderIcon,
+  IdCardIcon,
+} from "lucide-react";
+import { isDsacWideRole } from "@/lib/constants";
 
 export interface NavItem {
   title: string;
   href: string;
   icon: LucideIcon;
-  /** Omit to allow every role. */
+  /** Omit to allow every role that sees this sidebar. */
   roles?: Role[];
 }
 
-export const NAV_ITEMS: NavItem[] = [
+/** DSAC sidebar — deliberately short. Everything else is one click deeper, inside an entity. */
+const DSAC_NAV: NavItem[] = [
   { title: "Dashboard", href: "/dashboard", icon: LayoutDashboardIcon },
-  { title: "Entities", href: "/entities", icon: Building2Icon },
-  { title: "Documents", href: "/documents", icon: FileTextIcon },
-  { title: "Tasks", href: "/tasks", icon: KanbanIcon },
-  { title: "Early Warning", href: "/risk", icon: AlertTriangleIcon },
-  { title: "Audit Log", href: "/audit-log", icon: ShieldIcon, roles: ["DSAC_ADMIN"] },
+  { title: "Entities & NPOs", href: "/entities", icon: Building2Icon },
+  { title: "Reports", href: "/reports", icon: FileTextIcon },
+  { title: "Requests / Support", href: "/requests", icon: LifeBuoyIcon },
+  { title: "Alerts", href: "/alerts", icon: BellRingIcon },
+  { title: "Administration", href: "/administration", icon: SettingsIcon, roles: ["DSAC_ADMIN"] },
+];
+
+/** Entity / NPO portal sidebar. */
+const ENTITY_NAV: NavItem[] = [
+  { title: "Dashboard", href: "/dashboard", icon: LayoutDashboardIcon },
+  { title: "Performance", href: "/performance", icon: TargetIcon },
+  { title: "Finance", href: "/finance", icon: WalletIcon },
+  { title: "Compliance", href: "/compliance", icon: ClipboardCheckIcon },
+  { title: "Reports", href: "/reports", icon: FileTextIcon },
+  { title: "Requests", href: "/requests", icon: LifeBuoyIcon },
+  { title: "Documents", href: "/documents", icon: FolderIcon },
+  { title: "Profile", href: "/profile", icon: IdCardIcon },
 ];
 
 export function navItemsForRole(role: Role): NavItem[] {
-  return NAV_ITEMS.filter((item) => !item.roles || item.roles.includes(role));
+  const items = isDsacWideRole(role) ? DSAC_NAV : ENTITY_NAV;
+  return items.filter((item) => !item.roles || item.roles.includes(role));
 }

@@ -9,6 +9,10 @@ export const uploadDocumentMetadataSchema = z.object({
   financialYearId: z.string().min(1),
   quarter: z.enum(["Q1", "Q2", "Q3", "Q4", "ANNUAL"]).optional(),
   changeNote: z.string().trim().max(1000).optional(),
+  /** Evidence links: what this document supports. At most one of these is set by the upload dialog. */
+  reportId: z.string().min(1).optional(),
+  kpiId: z.string().min(1).optional(),
+  budgetLineId: z.string().min(1).optional(),
 });
 
 export const reviewDocumentSchema = z.object({

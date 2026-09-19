@@ -1,9 +1,9 @@
 import { Badge } from "@/components/ui/badge";
 import { AUDIT_OPINION_LABELS } from "@/lib/constants";
 import { AUDIT_SEVERITY_VISUALS } from "@/lib/risk-visuals";
-import type { EntityDetail } from "@/lib/data/entity-detail";
+import type { EntityProfileData } from "@/lib/data/entity-profile";
 
-export function AuditHistory({ auditHistory }: { auditHistory: EntityDetail["auditHistory"] }) {
+export function AuditHistory({ auditHistory }: { auditHistory: EntityProfileData["auditHistory"] }) {
   if (auditHistory.length === 0) {
     return <p className="text-muted-foreground text-sm">No audit findings recorded.</p>;
   }

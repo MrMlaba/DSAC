@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { requireUser } from "@/lib/current-user";
 import { listDocuments, listEntityOptions } from "@/lib/data/documents";
 import { listFinancialYears, getDefaultFinancialYear } from "@/lib/data/financial-years";
+import { listEvidenceTargets } from "@/lib/data/evidence";
 import { isDsacWideRole, canUploadDocuments, DOCUMENT_TYPE_LABELS } from "@/lib/constants";
 import { ReviewStatusBadge } from "@/components/review-status-badge";
 import { DocumentFilters } from "@/components/document-filters";
@@ -25,6 +26,9 @@ export default async function DocumentsPage({
   const search = typeof resolved.q === "string" ? resolved.q : undefined;
   const entityId = dsacWide && typeof resolved.entity === "string" ? resolved.entity : undefined;
 
+  const targets = !dsacWide && user.entityId ? await listEvidenceTargets(user, user.entityId) : undefined;
+  const initialLink = typeof resolved.link === "string" && /^(report|kpi|line):[w-]+$/.test(resolved.link) ? resolved.link : undefined;
+
   const [documents, entities, financialYears, defaultFy] = await Promise.all([
     listDocuments(user, { type, reviewStatus, search, entityId }),
     listEntityOptions(user),
@@ -38,7 +42,7 @@ export default async function DocumentsPage({
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Documents</h1>
           <p className="text-muted-foreground text-sm">
-            Strategic plans, APPs, quarterly and annual reports, and financials — versioned, with a DSAC review workflow.
+            Supporting evidence and formal documents — versioned, linked to the KPI, budget line or report they support, with a DSAC review workflow.
           </p>
         </div>
         {canUploadDocuments(user.role) && (
@@ -46,6 +50,8 @@ export default async function DocumentsPage({
             entities={entities}
             financialYears={financialYears.map((y) => ({ id: y.id, label: y.label }))}
             defaultFinancialYearId={defaultFy?.id ?? financialYears.at(-1)?.id ?? ""}
+            targets={targets}
+            initialLink={initialLink}
           />
         )}
       </div>

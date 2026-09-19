@@ -24,6 +24,9 @@ export async function POST(request: NextRequest) {
     financialYearId: form.get("financialYearId"),
     quarter: form.get("quarter") || undefined,
     changeNote: form.get("changeNote") || undefined,
+    reportId: form.get("reportId") || undefined,
+    kpiId: form.get("kpiId") || undefined,
+    budgetLineId: form.get("budgetLineId") || undefined,
   });
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid request." }, { status: 400 });

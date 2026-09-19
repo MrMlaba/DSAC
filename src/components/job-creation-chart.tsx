@@ -2,7 +2,7 @@
 
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartLegend, ChartLegendContent, type ChartConfig } from "@/components/ui/chart";
-import type { EntityDetail } from "@/lib/data/entity-detail";
+import type { EntityProfileData } from "@/lib/data/entity-profile";
 
 const chartConfig = {
   permanent: { label: "Permanent", color: "var(--chart-1)" },
@@ -10,7 +10,7 @@ const chartConfig = {
   youth: { label: "Youth", color: "var(--chart-3)" },
 } satisfies ChartConfig;
 
-export function JobCreationChart({ jobCreationByYear }: { jobCreationByYear: EntityDetail["jobCreationByYear"] }) {
+export function JobCreationChart({ jobCreationByYear }: { jobCreationByYear: EntityProfileData["jobCreationByYear"] }) {
   const data = jobCreationByYear.map((j) => ({
     year: `FY ${j.fyLabel}`,
     permanent: j.permanent,
